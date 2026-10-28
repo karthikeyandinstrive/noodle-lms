@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import type { Translate } from "@/lib/i18n";
 
 export type QuestionType = "multichoice" | "truefalse" | "shortanswer" | "numerical" | "essay" | "matching";
 export type GradeMethod = "highest" | "average" | "first" | "last";
@@ -171,6 +172,12 @@ export const TYPE_LABEL: Record<QuestionType, string> = {
   essay: "Essay",
   matching: "Matching",
 };
+
+/** Translated grading-method label (keys: quiz.gradeMethod.*). */
+export const gradeMethodLabel = (t: Translate, m: GradeMethod) => t(`quiz.gradeMethod.${m}`, GRADE_METHOD_LABEL[m]);
+
+/** Translated question-type label (keys: quiz.type.*). */
+export const typeLabel = (t: Translate, type: QuestionType) => t(`quiz.type.${type}`, TYPE_LABEL[type]);
 
 export function formatDuration(seconds: number) {
   const s = Math.max(0, Math.floor(seconds));

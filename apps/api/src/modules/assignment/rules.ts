@@ -48,7 +48,51 @@ export function submissionState(
   return { canEdit: true, canSubmit: input.status !== "submitted", reason: null };
 }
 
-/** Stable, opaque ordering of participants for blind marking. */
+/**
+ * Stable, opaque ordering of participants.
+ * @deprecated Positions shift when enrolments change; use participantNumbersFor.
+ */
 export function blindOrder(ids: string[], hash: (s: string) => string) {
   return [...ids].sort((a, b) => (hash(a) < hash(b) ? -1 : hash(a) > hash(b) ? 1 : 0));
+}
+
+export const PARTICIPANT_NUMBER_MIN = 1000;
+export const PARTICIPANT_NUMBER_MAX = 9999;
+const SPAN = PARTICIPANT_NUMBER_MAX - PARTICIPANT_NUMBER_MIN + 1;
+
+/**
+ * Blind-marking aliases ("Participant 4821"): a 4-digit number derived from a keyed
+ * hash of (assignmentId, userId), so a learner keeps the same number when other
+ * people enrol or leave and numbers can't be linked across assignments.
+ *
+ * `mac(message)` must return a non-negative integer from a keyed hash (HMAC).
+ * Collisions are resolved deterministically: users are processed by user id and
+ * each takes the first free number in its own probe sequence
+ * (mac("<assignment>:<user>"), mac("<assignment>:<user>:1"), …). A number can
+ * only change if a user with a lower id who collides with it joins the list.
+ */
+export function participantNumbersFor(assignmentId: string, userIds: string[], mac: (message: string) => number) {
+  const ids = [...new Set(userIds)].sort();
+  const taken = new Set<number>();
+  const out = new Map<string, number>();
+  for (const id of ids) {
+    let n = 0;
+    for (let k = 0; ; k++) {
+      if (k >= 64) {
+        // Pathological (more participants than numbers, or a broken mac): linear probe.
+        let c = PARTICIPANT_NUMBER_MIN;
+        while (taken.has(c) && c < PARTICIPANT_NUMBER_MAX + ids.length) c++;
+        n = c;
+        break;
+      }
+      const candidate = PARTICIPANT_NUMBER_MIN + (Math.abs(Math.trunc(mac(k ? `${assignmentId}:${id}:${k}` : `${assignmentId}:${id}`))) % SPAN);
+      if (!taken.has(candidate)) {
+        n = candidate;
+        break;
+      }
+    }
+    taken.add(n);
+    out.set(id, n);
+  }
+  return out;
 }

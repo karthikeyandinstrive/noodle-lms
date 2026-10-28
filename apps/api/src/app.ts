@@ -13,11 +13,14 @@ import {
   validatorCompiler,
   type ZodTypeProvider,
 } from "fastify-type-provider-zod";
+import { sql } from "drizzle-orm";
+import { systemDb } from "@lms/db";
 import { isCapability } from "@lms/rbac";
 import { config } from "./config";
 import { authPlugin } from "./core/auth";
 import { AppError } from "./core/errors";
 import { logger } from "./core/logger";
+import { metricsPlugin } from "./core/metrics";
 import { redis } from "./core/redis";
 import { tenantPlugin } from "./core/tenant";
 import { modules } from "./modules";
@@ -100,6 +103,27 @@ export async function buildApp() {
 
   // ─── Health ────────────────────────────────────────────────────────────
   app.get("/health", { config: { tenant: false }, schema: { hide: true } }, async () => ({ status: "ok" }));
+  // Readiness: the database (and Redis when configured) must answer. Liveness stays /health.
+  app.get("/ready", { config: { tenant: false }, schema: { hide: true } }, async (_req, reply) => {
+    const checks: Record<string, "ok" | "error" | "disabled"> = { db: "error", redis: redis ? "error" : "disabled" };
+    try {
+      await (await systemDb()).execute(sql`select 1`);
+      checks.db = "ok";
+    } catch (err) {
+      app.log.warn({ err }, "readiness: database check failed");
+    }
+    if (redis) {
+      try {
+        await redis.ping();
+        checks.redis = "ok";
+      } catch (err) {
+        app.log.warn({ err }, "readiness: redis check failed");
+      }
+    }
+    const ready = !Object.values(checks).includes("error");
+    return reply.status(ready ? 200 : 503).send({ status: ready ? "ready" : "not_ready", checks });
+  });
+  await app.register(metricsPlugin);
 
   // ─── Feature modules (Moodle plugin equivalent) ────────────────────────
   for (const mod of modules) {

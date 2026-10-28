@@ -1,8 +1,8 @@
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { activityCompletions, badgeIssues, badges, courseCompletions, withTenant, type BadgeCriteria, type DB } from "@lms/db";
 import { randomToken } from "../../core/crypto";
-import { emit, on } from "../../core/events";
-import { enqueue } from "../../core/jobs";
+import { emitInTx, on } from "../../core/events";
+import { defineJob, enqueueJob } from "../../core/jobs";
 import { notify } from "../../core/notify";
 import { COMPLETED_STATES, isTriggeredBy, meetsCriteria } from "./criteria";
 
@@ -16,9 +16,10 @@ export function badgeStatus(issue: Pick<BadgeIssueRow, "revokedAt" | "expiresAt"
 }
 
 /**
- * Awards a badge (idempotent). A revoked issue is reinstated only when `reinstate`
+ * Awards a badge (idempotent, safe under concurrency: the insert uses ON CONFLICT
+ * DO NOTHING on (badge, user)). A revoked issue is reinstated only when `reinstate`
  * is set (manual award). Returns the new/reinstated issue or null if nothing changed.
- * The caller emits `badge.awarded` after commit.
+ * The caller emits `badge.awarded` with `emitInTx` in the same transaction.
  */
 export async function awardBadge(
   tx: DB,
@@ -35,13 +36,15 @@ export async function awardBadge(
   let row: BadgeIssueRow;
   if (existing) {
     if (!existing.revokedAt || !input.reinstate) return null;
-    [row] = (await tx
+    const [updated] = await tx
       .update(badgeIssues)
       .set({ revokedAt: null, issuedAt: now, expiresAt, issuedBy: input.issuedBy ?? null })
-      .where(eq(badgeIssues.id, existing.id))
-      .returning()) as [BadgeIssueRow];
+      .where(and(eq(badgeIssues.id, existing.id), isNotNull(badgeIssues.revokedAt)))
+      .returning();
+    if (!updated) return null;
+    row = updated;
   } else {
-    [row] = (await tx
+    const [inserted] = await tx
       .insert(badgeIssues)
       .values({
         organizationId: badge.organizationId,
@@ -52,7 +55,11 @@ export async function awardBadge(
         issuedAt: now,
         expiresAt,
       })
-      .returning()) as [BadgeIssueRow];
+      .onConflictDoNothing({ target: [badgeIssues.badgeId, badgeIssues.userId] })
+      .returning();
+    // Awarded concurrently by another transaction.
+    if (!inserted) return null;
+    row = inserted;
   }
   await notify(tx, {
     organizationId: badge.organizationId,
@@ -65,13 +72,15 @@ export async function awardBadge(
   return row;
 }
 
-/** Evaluates automatic badges for one learner after a course or activity completion. */
-async function evaluateAutoBadges(
-  organizationId: string,
-  userId: string,
-  event: { courseId: string; courseCompleted?: string; activityCompleted?: string },
-) {
-  const awarded = await withTenant(organizationId, async (tx) => {
+type AutoAwardPayload = { organizationId: string; userId: string; courseId: string; courseCompleted?: string; activityCompleted?: string };
+
+/**
+ * Durable job: evaluates automatic badges for one learner after a course or
+ * activity completion, and emits `badge.awarded` through the outbox in the same
+ * transaction. Re-runs are no-ops (awardBadge skips existing awards).
+ */
+async function evaluateAutoBadges({ organizationId, userId, ...event }: AutoAwardPayload) {
+  await withTenant(organizationId, async (tx) => {
     // Course badges of this course, plus site badges (course_completion of any course).
     const candidates = (
       await tx
@@ -79,7 +88,7 @@ async function evaluateAutoBadges(
         .from(badges)
         .where(and(eq(badges.status, "active"), or(eq(badges.courseId, event.courseId), isNull(badges.courseId))))
     ).filter((b) => isTriggeredBy(b.criteria, event));
-    if (!candidates.length) return [];
+    if (!candidates.length) return;
 
     const activityIds = [...new Set(candidates.flatMap((b) => (b.criteria.type === "activities" ? b.criteria.activityIds : [])))];
     const courseIds = [...new Set(candidates.flatMap((b) => (b.criteria.type === "course_completion" ? [b.criteria.courseId] : [])))];
@@ -99,28 +108,43 @@ async function evaluateAutoBadges(
     ]);
     const progress = { completedActivityIds: new Set(doneActivities.map((r) => r.id)), completedCourseIds: new Set(doneCourses.map((r) => r.id)) };
 
-    const out: { badge: BadgeRow; issue: BadgeIssueRow }[] = [];
     for (const badge of candidates) {
       if (!meetsCriteria(badge.criteria, progress)) continue;
       const issue = await awardBadge(tx, { badge, userId });
-      if (issue) out.push({ badge, issue });
+      if (issue) await emitInTx(tx, "badge.awarded", { organizationId, userId, badgeId: badge.id, courseId: badge.courseId });
     }
-    return out;
   });
-  for (const { badge } of awarded) {
-    await emit("badge.awarded", { organizationId, userId, badgeId: badge.id, courseId: badge.courseId });
-  }
 }
 
 export function setupBadges() {
   // Badge images: component "badge" access (any signed-in member) is registered by the files module.
-  on("course.completed", async (_tx, p) => {
-    enqueue("badges:course-completed", () => evaluateAutoBadges(p.organizationId, p.userId, { courseId: p.courseId, courseCompleted: p.courseId }));
-  });
-  on("activity.completed", async (_tx, p) => {
-    if (!(COMPLETED_STATES as readonly string[]).includes(p.state)) return;
-    enqueue("badges:activity-completed", () => evaluateAutoBadges(p.organizationId, p.userId, { courseId: p.courseId, activityCompleted: p.activityId }));
-  });
+  defineJob<AutoAwardPayload>("badges.autoAward", evaluateAutoBadges);
+
+  on(
+    "course.completed",
+    async (tx, p) => {
+      await enqueueJob(
+        tx,
+        "badges.autoAward",
+        { organizationId: p.organizationId, userId: p.userId, courseId: p.courseId, courseCompleted: p.courseId } satisfies AutoAwardPayload,
+        { tenantId: p.organizationId, uniqueKey: `badges.autoAward:course:${p.courseId}:${p.userId}` },
+      );
+    },
+    { id: "badges.autoAwardOnCourseCompleted" },
+  );
+  on(
+    "activity.completed",
+    async (tx, p) => {
+      if (!(COMPLETED_STATES as readonly string[]).includes(p.state)) return;
+      await enqueueJob(
+        tx,
+        "badges.autoAward",
+        { organizationId: p.organizationId, userId: p.userId, courseId: p.courseId, activityCompleted: p.activityId } satisfies AutoAwardPayload,
+        { tenantId: p.organizationId, uniqueKey: `badges.autoAward:activity:${p.activityId}:${p.userId}` },
+      );
+    },
+    { id: "badges.autoAwardOnActivityCompleted" },
+  );
 }
 
 export type { BadgeCriteria };

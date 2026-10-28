@@ -21,6 +21,13 @@ const PAGE = { landscape: { w: 297, h: 210 }, portrait: { w: 210, h: 297 } } as 
 const PT_TO_MM = 25.4 / 72;
 const BOLD_FROM_PT = 24;
 
+/** The PDF is rendered with DejaVu Sans (regular/bold); the API serves the same files so the preview matches. */
+const CERT_FONT = '"LMS Certificate Sans"';
+const CERT_FONT_CSS = `
+@font-face { font-family: ${CERT_FONT}; font-weight: 400; font-display: swap; src: url("/api/v1/certificates/fonts/DejaVuSans.ttf") format("truetype"); }
+@font-face { font-family: ${CERT_FONT}; font-weight: 700; font-display: swap; src: url("/api/v1/certificates/fonts/DejaVuSans-Bold.ttf") format("truetype"); }
+`;
+
 type Draft = Pick<CertificateTemplate, "name" | "orientation" | "backgroundFileId" | "elements">;
 
 const STARTER: CertificateElement[] = [
@@ -76,6 +83,7 @@ function Preview({
       onPointerUp={() => (drag.current = null)}
       onPointerLeave={() => (drag.current = null)}
     >
+      <style>{CERT_FONT_CSS}</style>
       {draft.backgroundFileId && (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={fileUrl(draft.backgroundFileId, true)} alt="" className="pointer-events-none absolute inset-0 size-full object-fill" />
@@ -105,7 +113,7 @@ function Preview({
                 whiteSpace: anchored ? "pre" : "pre-wrap",
                 textAlign: align,
                 fontSize: fontSize * PT_TO_MM * pxPerMm,
-                fontFamily: "Helvetica, Arial, sans-serif",
+                fontFamily: `${CERT_FONT}, "DejaVu Sans", Verdana, sans-serif`,
                 fontWeight: fontSize >= BOLD_FROM_PT ? 700 : 400,
                 color: el.color ?? "#1a1a1a",
               }}

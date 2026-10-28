@@ -3,15 +3,15 @@ import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import { activities, badgeIssues, badges, courses, enrolments, files, getSystemContext, users, type BadgeCriteria, type DB } from "@lms/db";
 import type { FastifyRequest } from "fastify";
 import { z } from "zod";
-import { config } from "../../config";
 import { audit } from "../../core/audit";
 import { requireUser } from "../../core/auth";
 import { hmac } from "../../core/crypto";
 import { badRequest, must, notFound } from "../../core/errors";
-import { emit } from "../../core/events";
+import { emitInTx } from "../../core/events";
 import { assertOwnFiles, downloadUrl } from "../../core/files";
 import { hasCapability, requireCapability } from "../../core/rbac";
-import { ok, zDate, zId, zNullableDate, zOk, zUserSummary } from "../../core/schemas";
+import { ok, zDate, zId, zNullableDate, zOk, zUserSummary, patchSchema } from "../../core/schemas";
+import { publicBaseUrlOf } from "../../core/urls";
 import { loadCourse } from "../courses/service";
 import { buildAssertion, describeCriteria } from "./criteria";
 import { awardBadge, badgeStatus, type BadgeIssueRow, type BadgeRow } from "./service";
@@ -257,7 +257,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["Badges"],
         summary: "Open Badges 2.0 hosted Assertion (public)",
         params: z.object({ hash: zHash }),
-        response: { 200: z.record(z.unknown()), 410: z.record(z.unknown()) },
+        response: { 200: z.record(z.string(), z.unknown()), 410: z.record(z.string(), z.unknown()) },
       },
     },
     async (req, reply) => {
@@ -271,22 +271,22 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           .limit(1);
         if (!row) throw notFound("Assertion");
         const describe = await criteriaNames(tx, [row.badge]);
-        return { ...row, narrative: describe(row.badge) };
+        return { ...row, narrative: describe(row.badge), base: await publicBaseUrlOf(tx, req.org.id) };
       });
       reply.header("Cache-Control", "no-store").header("Access-Control-Allow-Origin", "*").header("Cross-Origin-Resource-Policy", "cross-origin");
-      const id = `${config.APP_URL.replace(/\/+$/, "")}/api/v1/badges/assertions/${out.issue.uniqueHash}`;
+      const id = `${out.base}/api/v1/badges/assertions/${out.issue.uniqueHash}`;
       if (out.issue.revokedAt) {
         return reply.status(410).send({ "@context": "https://w3id.org/openbadges/v2", type: "Assertion", id, revoked: true, revocationReason: "Revoked by the issuer" });
       }
       return buildAssertion({
-        baseUrl: config.APP_URL,
+        baseUrl: out.base,
         uniqueHash: out.issue.uniqueHash,
         salt: salt(out.issue.uniqueHash),
         recipientEmail: out.email,
         issuedOn: out.issue.issuedAt,
         expires: out.issue.expiresAt,
         badge: { id: out.badge.id, name: out.badge.name, description: out.badge.description, criteriaNarrative: out.narrative, hasImage: !!out.badge.imageFileId },
-        issuer: { name: req.org.name, url: config.APP_URL },
+        issuer: { name: req.org.name, url: out.base },
       });
     },
   );
@@ -348,13 +348,12 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
   app.get(
     "/classes/:id",
-    { config: publicCfg, schema: { tags: ["Badges"], summary: "Open Badges 2.0 BadgeClass (public)", params: z.object({ id: zId }), response: { 200: z.record(z.unknown()) } } },
+    { config: publicCfg, schema: { tags: ["Badges"], summary: "Open Badges 2.0 BadgeClass (public)", params: z.object({ id: zId }), response: { 200: z.record(z.string(), z.unknown()) } } },
     async (req, reply) => {
-      const { badge, narrative } = await req.tenant(async (tx) => {
+      const { badge, narrative, base } = await req.tenant(async (tx) => {
         const b = must((await tx.select().from(badges).where(eq(badges.id, req.params.id)).limit(1))[0], "Badge");
-        return { badge: b, narrative: (await criteriaNames(tx, [b]))(b) };
+        return { badge: b, narrative: (await criteriaNames(tx, [b]))(b), base: await publicBaseUrlOf(tx, req.org.id) };
       });
-      const base = config.APP_URL.replace(/\/+$/, "");
       reply.header("Access-Control-Allow-Origin", "*").header("Cross-Origin-Resource-Policy", "cross-origin");
       return {
         "@context": "https://w3id.org/openbadges/v2",
@@ -387,9 +386,9 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
   app.get(
     "/issuer",
-    { config: publicCfg, schema: { tags: ["Badges"], summary: "Open Badges 2.0 issuer Profile (public)", response: { 200: z.record(z.unknown()) } } },
+    { config: publicCfg, schema: { tags: ["Badges"], summary: "Open Badges 2.0 issuer Profile (public)", response: { 200: z.record(z.string(), z.unknown()) } } },
     async (req, reply) => {
-      const base = config.APP_URL.replace(/\/+$/, "");
+      const base = await req.tenant((tx) => publicBaseUrlOf(tx, req.org.id));
       reply.header("Access-Control-Allow-Origin", "*").header("Cross-Origin-Resource-Policy", "cross-origin");
       return { "@context": "https://w3id.org/openbadges/v2", type: "Profile", id: `${base}/api/v1/badges/issuer`, name: req.org.name, url: base };
     },
@@ -415,7 +414,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["Badges"],
         summary: "Update a badge (badge:manage)",
         params: z.object({ id: zId }),
-        body: zBadgeInput.omit({ courseId: true }).partial(),
+        body: patchSchema(zBadgeInput.omit({ courseId: true })),
         response: { 200: zBadge },
       },
     },
@@ -556,15 +555,14 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         const awarded: string[] = [];
         for (const userId of ids) {
           const issue = await awardBadge(tx, { badge, userId, issuedBy: me.id, reinstate: true });
-          if (issue) awarded.push(userId);
+          if (!issue) continue;
+          awarded.push(userId);
+          await emitInTx(tx, "badge.awarded", { organizationId: req.org.id, userId, badgeId: badge.id, courseId: badge.courseId });
         }
         if (awarded.length) await audit(tx, req, "badge.awarded", { type: "badge", id: badge.id }, { userIds: awarded });
-        return { badge, awarded };
+        return awarded.length;
       });
-      for (const userId of out.awarded) {
-        await emit("badge.awarded", { organizationId: req.org.id, userId, badgeId: out.badge.id, courseId: out.badge.courseId });
-      }
-      return { awarded: out.awarded.length };
+      return { awarded: out };
     },
   );
 

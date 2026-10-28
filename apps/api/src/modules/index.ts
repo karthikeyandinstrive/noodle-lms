@@ -24,6 +24,14 @@ import { rolesModule } from "./roles";
 import { usersModule } from "./users";
 import { videoModule } from "./video";
 import { workshopModule } from "./workshop";
+import { backupModule } from "./backup";
+import { ltiModule } from "./lti";
+import { messagingModule } from "./messaging";
+import { mfaModule } from "./mfa";
+import { schedulerModule } from "./scheduler";
+import { scormModule } from "./scorm";
+import { searchModule } from "./search";
+import { ssoModule } from "./sso";
 
 /**
  * Every feature module, in registration order. Adding a module = create
@@ -32,6 +40,8 @@ import { workshopModule } from "./workshop";
 export const modules: LmsModule[] = [
   // core
   authModule,
+  mfaModule,
+  ssoModule,
   usersModule,
   rolesModule,
   organizationModule,
@@ -44,6 +54,10 @@ export const modules: LmsModule[] = [
   notificationsModule,
   calendarModule,
   reportsModule,
+  schedulerModule,
+  searchModule,
+  messagingModule,
+  backupModule,
   // activities
   contentModule,
   assignmentModule,
@@ -56,6 +70,8 @@ export const modules: LmsModule[] = [
   videoModule,
   certificateModule,
   badgesModule,
+  ltiModule,
+  scormModule,
   // commerce
   paymentsModule,
   billingModule,

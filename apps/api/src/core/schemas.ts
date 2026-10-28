@@ -19,6 +19,21 @@ export const paged = <T extends z.ZodTypeAny>(item: T) =>
 
 export const offset = (p: Pagination) => (p.page - 1) * p.pageSize;
 
+/**
+ * PATCH body from a create schema: every field optional and **no defaults**.
+ * In zod 4, `.partial()` still applies `.default()` values, so a PATCH that
+ * omits a field would silently reset it. Always use this for updates.
+ */
+export function patchSchema<T extends z.ZodRawShape>(schema: z.ZodObject<T>) {
+  const shape: Record<string, z.ZodType> = {};
+  for (const [key, field] of Object.entries(schema.shape) as [string, z.ZodType][]) {
+    let inner: z.ZodType = field;
+    while (inner instanceof z.ZodDefault || inner instanceof z.ZodPrefault) inner = inner.unwrap() as z.ZodType;
+    shape[key] = inner.optional();
+  }
+  return z.object(shape) as unknown as ReturnType<z.ZodObject<{ [K in keyof T]: T[K] extends z.ZodDefault<infer I extends z.ZodType> ? I : T[K] }>["partial"]>;
+}
+
 export const zOk = z.object({ ok: z.literal(true) });
 export const ok = { ok: true as const };
 

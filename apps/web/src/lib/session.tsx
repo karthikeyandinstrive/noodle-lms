@@ -9,6 +9,8 @@ export type Me = {
   organization: { id: string; name: string; slug: string; selfRegistration: boolean; systemContextId: string | null };
   /** Site-level capabilities (admin navigation). Course/activity capabilities come with those resources. */
   capabilities: Record<string, boolean>;
+  /** Organization policy requires this user to set up MFA before using the app. */
+  mfaEnrollmentRequired?: boolean;
 };
 
 export const meKey = ["me"] as const;

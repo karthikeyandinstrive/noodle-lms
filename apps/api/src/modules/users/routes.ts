@@ -23,11 +23,11 @@ import { audit } from "../../core/audit";
 import { config } from "../../config";
 import { badRequest, must } from "../../core/errors";
 import { emit } from "../../core/events";
-import { enqueue } from "../../core/jobs";
-import { sendMail } from "../../core/mail";
+import { queueMail } from "../../core/mail";
 import { requireCapability } from "../../core/rbac";
-import { offset, ok, paged, zDate, zId, zNullableDate, zOk, zPagination } from "../../core/schemas";
+import { offset, ok, paged, zDate, zId, zNullableDate, zOk, zPagination, patchSchema } from "../../core/schemas";
 import { consumeAuthToken, issueAuthToken, zPassword } from "../auth/service";
+import { assertWithinLimits } from "../billing/service";
 import { enrolUser, loadCourseWith } from "../courses/service";
 
 const zUser = z.object({
@@ -71,13 +71,11 @@ async function systemCap(tx: DB, req: Parameters<typeof requireCapability>[1] & 
 
 async function inviteUser(tx: DB, organizationId: string, orgName: string, user: typeof users.$inferSelect) {
   const token = await issueAuthToken(tx, { organizationId, userId: user.id, purpose: "invite", ttlMinutes: 60 * 24 * 7 });
-  enqueue("invite-email", () =>
-    sendMail({
+  await queueMail(tx, organizationId, {
       to: user.email,
       subject: `You're invited to ${orgName}`,
       text: `Set your password to get started: ${config.APP_URL}/accept-invite?token=${token}`,
-    }),
-  );
+    });
 }
 
 export const routes: FastifyPluginAsyncZod = async (app) => {
@@ -90,7 +88,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
   app.patch(
     "/users/me",
-    { schema: { tags: ["Users"], summary: "Update my profile", body: zProfileInput.partial(), response: { 200: zUser } } },
+    { schema: { tags: ["Users"], summary: "Update my profile", body: patchSchema(zProfileInput), response: { 200: zUser } } },
     (req) => {
       const me = requireUser(req);
       return req.tenant(async (tx) => (await tx.update(users).set(req.body).where(eq(users.id, me.id)).returning())[0]!);
@@ -99,7 +97,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
   app.get(
     "/users/me/export",
-    { schema: { tags: ["Users"], summary: "Download my personal data (GDPR Art. 15/20)", response: { 200: z.record(z.unknown()) } } },
+    { schema: { tags: ["Users"], summary: "Download my personal data (GDPR Art. 15/20)", response: { 200: z.record(z.string(), z.unknown()) } } },
     (req) => {
       const me = requireUser(req);
       return req.tenant(async (tx) => {
@@ -160,6 +158,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     async (req, reply) => {
       const user = await req.tenant(async (tx) => {
         await systemCap(tx, req, "user:manage");
+        await assertWithinLimits(tx, req.org.id, "users", 1);
         const { password, sendInvite, ...input } = req.body;
         const [created] = await tx
           .insert(users)
@@ -199,6 +198,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           (await tx.select({ email: users.email }).from(users).where(inArray(sql`lower(${users.email})`, emails))).map((r) => r.email.toLowerCase()),
         );
         const toCreate = req.body.rows.filter((r) => !existing.has(r.email.toLowerCase()));
+        if (toCreate.length) await assertWithinLimits(tx, req.org.id, "users", toCreate.length);
         const created = toCreate.length
           ? await tx.insert(users).values(toCreate.map((r) => ({ ...r, email: r.email.toLowerCase(), organizationId: req.org.id, status: "pending" as const }))).returning()
           : [];
@@ -252,7 +252,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["Users"],
         summary: "Update a user (suspending signs them out everywhere)",
         params: z.object({ id: zId }),
-        body: zUserInput.partial().extend({ status: z.enum(["active", "suspended"]).optional(), password: zPassword.optional() }),
+        body: patchSchema(zUserInput).extend({ status: z.enum(["active", "suspended"]).optional(), password: zPassword.optional() }),
         response: { 200: zUser },
       },
     },
@@ -360,7 +360,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
   app.patch(
     "/cohorts/:id",
-    { schema: { tags: ["Cohorts"], summary: "Update a cohort", params: z.object({ id: zId }), body: zCohortInput.partial(), response: { 200: zOk } } },
+    { schema: { tags: ["Cohorts"], summary: "Update a cohort", params: z.object({ id: zId }), body: patchSchema(zCohortInput), response: { 200: zOk } } },
     async (req) => {
       await req.tenant(async (tx) => {
         await systemCap(tx, req, "cohort:manage");

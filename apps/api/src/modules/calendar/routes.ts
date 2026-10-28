@@ -8,7 +8,7 @@ import { requireUser } from "../../core/auth";
 import { badRequest, must } from "../../core/errors";
 import { hasCapability } from "../../core/rbac";
 import { cleanHtml } from "../../core/sanitize";
-import { ok, zDate, zDateInput, zId, zOk } from "../../core/schemas";
+import { ok, zDate, zDateInput, zId, zOk, patchSchema } from "../../core/schemas";
 import { buildIcs } from "./ics";
 import { assertCanManage, calendarItems, manageableCourses, type CalendarEventRow } from "./service";
 
@@ -181,7 +181,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["Calendar"],
         summary: "Update an event",
         params: z.object({ id: zId }),
-        body: zEventInput.omit({ type: true, courseId: true }).partial(),
+        body: patchSchema(zEventInput.omit({ type: true, courseId: true })),
         response: { 200: zEvent },
       },
     },

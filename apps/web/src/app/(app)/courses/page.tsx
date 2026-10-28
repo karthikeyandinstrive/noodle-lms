@@ -3,21 +3,23 @@
 import { Plus } from "lucide-react";
 import Link from "next/link";
 import { PageHeader } from "@/components/common";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { CourseList } from "@/features/courses/course-list";
 import { useSession } from "@/lib/session";
+import { useT } from "@/lib/i18n";
 
 export default function MyCoursesPage() {
   const { can } = useSession();
+  const t = useT();
   return (
     <>
       <PageHeader
-        title="My courses"
+        title={t("nav.myCourses", "My courses")}
         actions={
           can("course:create") && (
-            <Button render={<Link href="/courses/new" />}>
-              <Plus /> New course
-            </Button>
+            <Link href="/courses/new" className={buttonVariants()}>
+              <Plus aria-hidden /> {t("course.new", "New course")}
+            </Link>
           )
         }
       />

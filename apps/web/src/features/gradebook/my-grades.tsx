@@ -4,27 +4,32 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState, QueryState } from "@/components/common";
 import { api } from "@/lib/api";
+import { useLocale, useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 import { fmtGrade, fmtPercent, type MyCourseGrade } from "./types";
 import { UserReportTable, useMyUserReport } from "./user-report";
 
 function CourseDrilldown({ courseId }: { courseId: string }) {
+  const t = useT();
   const report = useMyUserReport(courseId);
   return (
     <div className="border-t p-4">
       <QueryState query={report}>{report.data && <UserReportTable report={report.data} compact />}</QueryState>
-      <Button variant="link" className="mt-2 px-0" render={<Link href={`/courses/${courseId}/grades`} />}>
-        Open course grades and feedback
-      </Button>
+      <Link href={`/courses/${courseId}/grades`} className={cn(buttonVariants({ variant: "link" }), "mt-2 px-0")}>
+        {t("grades.openCourseGrades", "Open course grades and feedback")}
+      </Link>
     </div>
   );
 }
 
 /** All my course totals, each expandable to the course's user report. */
 export function MyGradesOverview() {
+  const t = useT();
+  const locale = useLocale();
   const [open, setOpen] = useState<string | null>(null);
   const query = useQuery({ queryKey: ["grades", "me"], queryFn: () => api<MyCourseGrade[]>("/grades/me") });
   return (
@@ -50,10 +55,10 @@ export function MyGradesOverview() {
                       <span className="block text-xs text-muted-foreground">{row.course.shortname}</span>
                     </span>
                     <span className="text-right">
-                      <span className="block text-lg font-semibold tabular-nums">{fmtPercent(row.percentage)}</span>
+                      <span className="block text-lg font-semibold tabular-nums">{fmtPercent(row.percentage, locale)}</span>
                       {row.gradeMax !== null && (
                         <span className="block text-xs text-muted-foreground tabular-nums">
-                          {fmtGrade(row.grade)} / {fmtGrade(row.gradeMax)}
+                          {fmtGrade(row.grade, locale)} / {fmtGrade(row.gradeMax, locale)}
                         </span>
                       )}
                     </span>
@@ -67,7 +72,7 @@ export function MyGradesOverview() {
           })}
         </ul>
       ) : (
-        <EmptyState title="No grades yet" description="Your course totals appear here once you are enrolled in a course." />
+        <EmptyState title={t("grades.noGrades", "No grades yet")} description={t("grades.noCourseTotalsHint", "Your course totals appear here once you are enrolled in a course.")} />
       )}
     </QueryState>
   );

@@ -26,7 +26,8 @@ import { emit } from "../../core/events";
 import { notify } from "../../core/notify";
 import { capabilityMap, hasCapability, requireCapability } from "../../core/rbac";
 import { cleanHtml } from "../../core/sanitize";
-import { offset, ok, paged, zDate, zDateInput, zId, zNullableDate, zOk, zPagination, zUserSummary } from "../../core/schemas";
+import { assertWithinLimits } from "../billing/service";
+import { offset, ok, paged, zDate, zDateInput, zId, zNullableDate, zOk, zPagination, zUserSummary, patchSchema } from "../../core/schemas";
 import {
   createCourse,
   ENROLABLE_ROLES,
@@ -131,6 +132,8 @@ const courseCaps = [
   "role:assign",
   "calendar:manage_course",
   "notification:send",
+  "course:backup",
+  "message:send",
 ] as const;
 
 function toCourse(c: typeof courses.$inferSelect) {
@@ -179,7 +182,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
   app.patch(
     "/categories/:id",
-    { schema: { tags: ["Courses"], summary: "Update a category", params: z.object({ id: zId }), body: zCategoryInput.omit({ parentId: true }).partial(), response: { 200: zCategory } } },
+    { schema: { tags: ["Courses"], summary: "Update a category", params: z.object({ id: zId }), body: patchSchema(zCategoryInput.omit({ parentId: true })), response: { 200: zCategory } } },
     (req) =>
       req.tenant(async (tx) => {
         const cat = must((await tx.select().from(courseCategories).where(eq(courseCategories.id, req.params.id)).limit(1))[0], "Category");
@@ -257,6 +260,9 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           summary: input.summary ? cleanHtml(input.summary) : null,
           enrolmentKeyHash: enrolmentKey ? await hash(enrolmentKey, ARGON2_OPTIONS) : null,
         });
+        // Checked after createCourse (which enforces course:create first) so callers without the
+        // capability get 403, not 402. The new row is already counted, so add 0; a 402 rolls it back.
+        await assertWithinLimits(tx, req.org.id, "courses", 0);
         await audit(tx, req, "course.created", { type: "course", id: c.id });
         return c;
       });
@@ -277,7 +283,9 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
             course: zCourse,
             sections: z.array(zSection.extend({ activities: z.array(zActivitySummary) })),
             enrolled: z.boolean(),
-            capabilities: z.record(z.boolean()),
+            capabilities: z.record(z.string(), z.boolean()),
+            /** Course permission context; only sent to users who can assign roles here. */
+            contextId: zId.nullable(),
           }),
         },
       },
@@ -310,6 +318,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           course: toCourse(course),
           enrolled,
           capabilities: { ...caps, "course:view": canView } as Record<string, boolean>,
+          contextId: caps["role:assign"] ? course.contextId : null,
           sections: sections.map((s) => ({
             ...s,
             activities: acts
@@ -323,7 +332,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
   app.patch(
     "/courses/:courseId",
-    { schema: { tags: ["Courses"], summary: "Update course settings", params: courseIdParam, body: zCourseInput.partial(), response: { 200: zCourse } } },
+    { schema: { tags: ["Courses"], summary: "Update course settings", params: courseIdParam, body: patchSchema(zCourseInput), response: { 200: zCourse } } },
     (req) =>
       req.tenant(async (tx) => {
         const course = await loadCourseWith(tx, req, req.params.courseId, "course:update");
@@ -391,7 +400,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["Courses"],
         summary: "Update a section",
         params: courseIdParam.extend({ sectionId: zId }),
-        body: zSectionInput.partial(),
+        body: patchSchema(zSectionInput),
         response: { 200: zSection },
       },
     },
@@ -662,7 +671,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
   app.patch(
     "/courses/:courseId/groups/:groupId",
-    { schema: { tags: ["Groups"], summary: "Update a group and its members", params: courseIdParam.extend({ groupId: zId }), body: zGroupInput.partial(), response: { 200: zGroup } } },
+    { schema: { tags: ["Groups"], summary: "Update a group and its members", params: courseIdParam.extend({ groupId: zId }), body: patchSchema(zGroupInput), response: { 200: zGroup } } },
     (req) =>
       req.tenant(async (tx) => {
         const course = await loadCourseWith(tx, req, req.params.courseId, "course:manage_groups");

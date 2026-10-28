@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ErrorAlert } from "@/components/common";
 import { api } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { attendanceKeys, type Session } from "./api";
 
 const toLocalInput = (iso: string | null | undefined) => {
@@ -37,6 +38,7 @@ export function SessionDialog({
   session?: Pick<Session, "id" | "startsAt" | "durationMinutes" | "description" | "groupId" | "hasCode">;
 }) {
   const qc = useQueryClient();
+  const t = useT();
   const editing = !!session;
   const [startsAt, setStartsAt] = useState(() => toLocalInput(session?.startsAt));
   const [duration, setDuration] = useState(String(session?.durationMinutes ?? 60));
@@ -71,7 +73,14 @@ export function SessionDialog({
     },
     onSuccess: async (r) => {
       const created = (r as { created?: number } | undefined)?.created;
-      toast.success(editing ? "Session updated" : `${created ?? 1} session${created === 1 ? "" : "s"} added`);
+      const n = created ?? 1;
+      toast.success(
+        editing
+          ? t("attendance.sessionUpdated", "Session updated")
+          : n === 1
+            ? t("attendance.sessionsAdded.one", "{n} session added", { n })
+            : t("attendance.sessionsAdded.other", "{n} sessions added", { n }),
+      );
       onOpenChange(false);
       await qc.invalidateQueries({ queryKey: attendanceKeys.all(activityId) });
     },
@@ -88,29 +97,29 @@ export function SessionDialog({
           }}
         >
           <DialogHeader>
-            <DialogTitle>{editing ? "Edit session" : "Add sessions"}</DialogTitle>
-            <DialogDescription>Sessions appear in the course calendar.</DialogDescription>
+            <DialogTitle>{editing ? t("attendance.editSession", "Edit session") : t("attendance.addSessions", "Add sessions")}</DialogTitle>
+            <DialogDescription>{t("attendance.sessionsInCalendar", "Sessions appear in the course calendar.")}</DialogDescription>
           </DialogHeader>
           {save.isError && <ErrorAlert error={save.error} />}
           <div className="grid gap-4 sm:grid-cols-[1fr_7rem]">
             <div className="space-y-1.5">
-              <Label htmlFor="s-start">Starts</Label>
+              <Label htmlFor="s-start">{t("attendance.starts", "Starts")}</Label>
               <Input id="s-start" type="datetime-local" required value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="s-dur">Minutes</Label>
+              <Label htmlFor="s-dur">{t("attendance.minutes", "Minutes")}</Label>
               <Input id="s-dur" type="number" min={5} max={1440} required value={duration} onChange={(e) => setDuration(e.target.value)} />
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="s-desc">Description</Label>
-            <Input id="s-desc" maxLength={1000} placeholder="e.g. Lecture 3 — Room B12" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <Label htmlFor="s-desc">{t("common.description", "Description")}</Label>
+            <Input id="s-desc" maxLength={1000} placeholder={t("attendance.descriptionPlaceholder", "e.g. Lecture 3 — Room B12")} value={description} onChange={(e) => setDescription(e.target.value)} />
           </div>
           {groups.length > 0 && (
             <div className="space-y-1.5">
-              <Label htmlFor="s-group">Audience</Label>
+              <Label htmlFor="s-group">{t("attendance.audience", "Audience")}</Label>
               <select id="s-group" className={selectClass} value={groupId} onChange={(e) => setGroupId(e.target.value)}>
-                <option value="">All students</option>
+                <option value="">{t("attendance.allStudents", "All students")}</option>
                 {groups.map((g) => (
                   <option key={g.id} value={g.id}>
                     {g.name}
@@ -120,47 +129,57 @@ export function SessionDialog({
             </div>
           )}
           <div className="space-y-1.5">
-            <Label htmlFor="s-code">Self-marking code {editing && session?.hasCode && <span className="font-normal text-muted-foreground">(a code is set)</span>}</Label>
+            <Label htmlFor="s-code">
+              {t("attendance.selfMarkCode", "Self-marking code")}{" "}
+              {editing && session?.hasCode && <span className="font-normal text-muted-foreground">{t("attendance.codeIsSet", "(a code is set)")}</span>}
+            </Label>
             <Input
               id="s-code"
               minLength={4}
               maxLength={32}
               autoComplete="off"
-              placeholder={editing && session?.hasCode ? "Leave empty to keep the current code" : "Optional, 4–32 characters"}
+              placeholder={
+                editing && session?.hasCode
+                  ? t("attendance.codeKeepPlaceholder", "Leave empty to keep the current code")
+                  : t("attendance.codePlaceholder", "Optional, 4–32 characters")
+              }
+              aria-describedby="s-code-hint"
               value={code}
               disabled={removeCode}
               onChange={(e) => setCode(e.target.value)}
             />
             {editing && session?.hasCode && (
               <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={removeCode} onChange={(e) => setRemoveCode(e.target.checked)} /> Remove the code
+                <input type="checkbox" checked={removeCode} onChange={(e) => setRemoveCode(e.target.checked)} /> {t("attendance.removeCode", "Remove the code")}
               </label>
             )}
-            <p className="text-xs text-muted-foreground">Students enter it to mark themselves present. It is stored hashed and can&apos;t be shown again.</p>
+            <p id="s-code-hint" className="text-xs text-muted-foreground">
+              {t("attendance.codeHint", "Students enter it to mark themselves present. It is stored hashed and can’t be shown again.")}
+            </p>
           </div>
           {!editing && (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <Switch id="s-repeat" checked={repeat} onCheckedChange={setRepeat} />
                 <Label htmlFor="s-repeat" className="font-normal">
-                  Repeat weekly
+                  {t("attendance.repeatWeekly", "Repeat weekly")}
                 </Label>
               </div>
               {repeat && (
                 <div className="space-y-1.5">
-                  <Label htmlFor="s-until">Until</Label>
+                  <Label htmlFor="s-until">{t("attendance.until", "Until")}</Label>
                   <Input id="s-until" type="date" required value={until} min={startsAt.slice(0, 10)} onChange={(e) => setUntil(e.target.value)} />
-                  <p className="text-xs text-muted-foreground">Up to 52 sessions.</p>
+                  <p className="text-xs text-muted-foreground">{t("attendance.upTo52", "Up to 52 sessions.")}</p>
                 </div>
               )}
             </div>
           )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
+              {t("common.cancel", "Cancel")}
             </Button>
             <Button type="submit" disabled={save.isPending || !startsAt}>
-              {save.isPending ? "Saving…" : editing ? "Save" : "Add"}
+              {save.isPending ? t("common.saving", "Saving…") : editing ? t("common.save", "Save") : t("common.add", "Add")}
             </Button>
           </DialogFooter>
         </form>

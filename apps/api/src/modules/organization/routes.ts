@@ -19,6 +19,8 @@ const zSettings = z.object({
   brandColor: z.string().regex(/^#[0-9a-f]{6}$/i).optional(),
   logoFileId: zId.nullable().optional(),
   supportEmail: z.string().email().nullable().optional(),
+  /** Org admins and managers must enroll in two-factor authentication. */
+  requireMfaForAdmins: z.boolean().optional(),
 });
 
 const zOrg = z.object({ id: zId, name: z.string(), slug: z.string(), customDomain: z.string().nullable(), plan: z.string(), settings: zSettings });
@@ -213,7 +215,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
               action: z.string(),
               targetType: z.string().nullable(),
               targetId: z.string().nullable(),
-              metadata: z.record(z.unknown()),
+              metadata: z.record(z.string(), z.unknown()),
               ip: z.string().nullable(),
               createdAt: zDate,
               actor: z.object({ id: zId, firstName: z.string(), lastName: z.string() }).nullable(),

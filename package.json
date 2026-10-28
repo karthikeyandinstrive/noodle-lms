@@ -21,9 +21,11 @@
     "db:migrate": "npm run migrate -w @lms/db",
     "db:seed": "npm run seed -w @lms/db",
     "db:reset": "npm run reset -w @lms/db",
-    "openapi:export": "npm run openapi:export -w @lms/api"
+    "openapi:export": "npm run openapi:export -w @lms/api",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "concurrently": "^9.1.2",
     "typescript": "^5.7.3"
   }

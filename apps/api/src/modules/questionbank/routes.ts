@@ -6,9 +6,11 @@ import { requireUser } from "../../core/auth";
 import { audit } from "../../core/audit";
 import { badRequest, forbidden, notFound } from "../../core/errors";
 import { offset, ok, paged, zDate, zId, zOk, zPagination } from "../../core/schemas";
-import { QUESTION_TYPES, zQuestionInput } from "../quiz/question-types";
+import { QUESTION_TYPES, zQuestionInput, type QuestionInput } from "../quiz/question-types";
+import { parseGift, serializeGift } from "./gift";
 import {
   assertCategoryDeletable,
+  type CategoryRow,
   canManageCourseBank,
   canManageSharedBank,
   createQuestion,
@@ -51,7 +53,7 @@ const zQuestionVersion = z.object({
   name: z.string(),
   text: z.string(),
   defaultMark: z.number(),
-  data: z.record(z.unknown()),
+  data: z.record(z.string(), z.unknown()),
   generalFeedback: z.string().nullable(),
   createdBy: z.object({ id: zId, firstName: z.string(), lastName: z.string() }).nullable(),
   createdAt: zDate,
@@ -70,7 +72,7 @@ const zExportQuestion = z.object({
   text: z.string(),
   defaultMark: z.number(),
   generalFeedback: z.string().nullable().optional(),
-  data: z.record(z.unknown()),
+  data: z.record(z.string(), z.unknown()),
 });
 const zExport = z.object({ format: z.literal("lms-questions"), version: z.literal(1), category: z.string(), questions: z.array(zExportQuestion) });
 
@@ -498,6 +500,120 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         }
         await audit(tx, req, "question.imported", { type: "question_category", id: cat.id }, { count: parsed.length });
         return { imported: parsed.length };
+      });
+    },
+  );
+
+  // ─── Import / export (GIFT) ─────────────────────────────────────────────
+
+  app.get(
+    "/categories/:id/export.gift",
+    {
+      schema: {
+        tags: ["Question bank"],
+        summary: "Export the latest versions of a category's questions in Moodle GIFT format (text/plain attachment)",
+        params: z.object({ id: zId }),
+        querystring: courseQuery,
+      },
+    },
+    async (req, reply) => {
+      requireUser(req);
+      const { cat, items } = await req.tenant(async (tx) => {
+        const cat = await loadCategory(tx, req, req.params.id, "read", req.query.courseId);
+        const qs = await tx
+          .select()
+          .from(questions)
+          .where(and(eq(questions.categoryId, cat.id), isNull(questions.deletedAt)));
+        const latest = await latestVersionsOf(tx, qs);
+        const items = qs
+          .map((q) => latest.get(q.id))
+          .filter((v): v is NonNullable<typeof v> => !!v)
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((v) => ({ type: v.type, name: v.name, text: v.text, defaultMark: v.defaultMark, generalFeedback: v.generalFeedback, data: v.data }));
+        return { cat, items };
+      });
+      const text = serializeGift(items, { comment: `Question category: ${cat.name.replace(/[\r\n]+/g, " ")}\n${items.length} question(s), exported ${new Date().toISOString()}` });
+      const base = cat.name.replace(/[^\w-]+/g, "_").replace(/^_+|_+$/g, "") || "questions";
+      return reply
+        .header("Cache-Control", "no-store")
+        .header("Content-Disposition", `attachment; filename="${base}.gift.txt"; filename*=UTF-8''${encodeURIComponent(`${cat.name}.gift.txt`)}`)
+        .type("text/plain; charset=utf-8")
+        .send(text);
+    },
+  );
+
+  const zGiftProblem = z.object({ index: z.number().int().nullable(), line: z.number().int(), title: z.string().nullable(), message: z.string() });
+
+  app.post(
+    "/categories/:id/import-gift",
+    {
+      bodyLimit: 5 * 1024 * 1024,
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["Question bank"],
+        summary: "Import questions in Moodle GIFT format. All-or-nothing: any unsupported or invalid question rejects the import.",
+        description:
+          "Unsupported constructs (description questions, Cloze) and invalid questions are reported in the 400 error details as { index, line, title, message }. " +
+          "With createCategories, $CATEGORY lines create sub-categories (relative to this category); otherwise they are ignored.",
+        params: z.object({ id: zId }),
+        body: z.object({ text: z.string().min(1).max(4_000_000), createCategories: z.boolean().default(false) }),
+        response: { 200: z.object({ imported: z.number().int(), categoriesCreated: z.number().int(), warnings: z.array(zGiftProblem) }) },
+      },
+    },
+    async (req) => {
+      const me = requireUser(req);
+      const parsed = parseGift(req.body.text);
+      const problems: z.infer<typeof zGiftProblem>[] = parsed.errors.map((e) => ({ index: null, ...e }));
+      const valid: { input: QuestionInput; category: string[] | null }[] = [];
+      parsed.questions.forEach((p, index) => {
+        const r = zQuestionInput.safeParse(p.question);
+        if (r.success) valid.push({ input: r.data, category: p.category });
+        else {
+          const message = r.error.issues.map((i) => (i.path.length ? `${i.path.join(".")}: ${i.message}` : i.message)).join("; ");
+          problems.push({ index, line: p.line, title: p.title ?? p.question.name, message });
+        }
+      });
+      problems.sort((a, b) => a.line - b.line);
+      if (problems.length) throw badRequest(`${problems.length} question(s) cannot be imported`, problems.slice(0, 50));
+      if (!valid.length) throw badRequest("No questions found in the GIFT text");
+      if (valid.length > 500) throw badRequest("At most 500 questions can be imported at once");
+      const warnings = parsed.questions.flatMap((p, index) => p.warnings.map((message) => ({ index, line: p.line, title: p.title ?? p.question.name, message })));
+
+      return req.tenant(async (tx) => {
+        const cat = await loadCategory(tx, req, req.params.id, "write");
+        const resolved = new Map<string, string>();
+        let categoriesCreated = 0;
+        const categoryFor = async (path: string[] | null) => {
+          if (!req.body.createCategories || !path?.length) return cat.id;
+          const key = JSON.stringify(path);
+          const hit = resolved.get(key);
+          if (hit) return hit;
+          let parent: Pick<CategoryRow, "id"> = cat;
+          for (const segment of path) {
+            const name = segment.slice(0, 255);
+            const [existing] = await tx
+              .select({ id: questionCategories.id })
+              .from(questionCategories)
+              .where(and(eq(questionCategories.parentId, parent.id), eq(questionCategories.name, name)))
+              .limit(1);
+            if (existing) parent = existing;
+            else {
+              const [created] = await tx
+                .insert(questionCategories)
+                .values({ organizationId: req.org.id, courseId: cat.courseId, parentId: parent.id, name })
+                .returning({ id: questionCategories.id });
+              parent = created!;
+              categoriesCreated++;
+            }
+          }
+          resolved.set(key, parent.id);
+          return parent.id;
+        };
+        for (const v of valid) {
+          await createQuestion(tx, { organizationId: req.org.id, categoryId: await categoryFor(v.category), userId: me.id, question: v.input });
+        }
+        await audit(tx, req, "question.imported", { type: "question_category", id: cat.id }, { count: valid.length, format: "gift", categoriesCreated });
+        return { imported: valid.length, categoriesCreated, warnings: warnings.slice(0, 100) };
       });
     },
   );

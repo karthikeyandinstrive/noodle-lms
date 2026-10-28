@@ -1,6 +1,7 @@
 "use client";
 
 import { Card, CardContent } from "@/components/ui/card";
+import { useFormat, useLocale, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /** Small KPI tile. */
@@ -31,18 +32,21 @@ export function InlineBar({ value, max, className }: { value: number; max: numbe
  * assistive technology; an equivalent data table is provided for screen readers.
  */
 export function DailyBars({ title, data, unit }: { title: string; data: { date: string; value: number }[]; unit: string }) {
+  const t = useT();
+  const locale = useLocale();
+  const { number } = useFormat();
   const max = Math.max(1, ...data.map((d) => d.value));
   const total = data.reduce((s, d) => s + d.value, 0);
-  const fmt = (date: string) => new Date(`${date}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+  const fmt = (date: string) => new Date(`${date}T00:00:00Z`).toLocaleDateString(locale, { month: "short", day: "numeric", timeZone: "UTC" });
   return (
     <figure className="space-y-2">
       <figcaption className="flex items-baseline justify-between gap-2 text-sm">
         <span className="font-medium">{title}</span>
-        <span className="text-xs text-muted-foreground">peak {max === 1 && total === 0 ? 0 : max} {unit}/day</span>
+        <span className="text-xs text-muted-foreground">{t("reports.peakPerDay", "peak {count} {unit}/day", { count: number(max === 1 && total === 0 ? 0 : max), unit })}</span>
       </figcaption>
       <div className="flex h-40 items-end gap-[2px] border-b border-l px-1 pt-2" aria-hidden>
         {data.map((d) => (
-          <div key={d.date} className="group relative flex h-full flex-1 items-end" title={`${fmt(d.date)}: ${d.value} ${unit}`}>
+          <div key={d.date} className="group relative flex h-full flex-1 items-end" title={`${fmt(d.date)}: ${number(d.value)} ${unit}`}>
             <div className="w-full rounded-t-sm bg-primary/80 transition-colors group-hover:bg-primary" style={{ height: `${(d.value / max) * 100}%`, minHeight: d.value ? 2 : 0 }} />
           </div>
         ))}
@@ -55,7 +59,7 @@ export function DailyBars({ title, data, unit }: { title: string; data: { date: 
         <caption>{title}</caption>
         <thead>
           <tr>
-            <th scope="col">Date</th>
+            <th scope="col">{t("common.date", "Date")}</th>
             <th scope="col">{unit}</th>
           </tr>
         </thead>
@@ -63,7 +67,7 @@ export function DailyBars({ title, data, unit }: { title: string; data: { date: 
           {data.map((d) => (
             <tr key={d.date}>
               <th scope="row">{fmt(d.date)}</th>
-              <td>{d.value}</td>
+              <td>{number(d.value)}</td>
             </tr>
           ))}
         </tbody>
@@ -73,17 +77,28 @@ export function DailyBars({ title, data, unit }: { title: string; data: { date: 
 }
 
 export function Pager({ page, pages, onPage }: { page: number; pages: number; onPage: (p: number) => void }) {
+  const t = useT();
   if (pages <= 1) return null;
   return (
-    <nav className="flex items-center justify-center gap-2" aria-label="Pagination">
-      <button type="button" className="rounded-md border px-2.5 py-1 text-sm disabled:opacity-50" disabled={page <= 1} onClick={() => onPage(page - 1)}>
-        Previous
+    <nav className="flex items-center justify-center gap-2" aria-label={t("reports.pagination", "Pagination")}>
+      <button
+        type="button"
+        className="rounded-md border px-2.5 py-1 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
+        disabled={page <= 1}
+        onClick={() => onPage(page - 1)}
+      >
+        {t("common.previous", "Previous")}
       </button>
-      <span className="text-sm text-muted-foreground">
-        Page {page} of {pages}
+      <span className="text-sm text-muted-foreground" aria-live="polite">
+        {t("reports.pageOf", "Page {page} of {pages}", { page, pages })}
       </span>
-      <button type="button" className="rounded-md border px-2.5 py-1 text-sm disabled:opacity-50" disabled={page >= pages} onClick={() => onPage(page + 1)}>
-        Next
+      <button
+        type="button"
+        className="rounded-md border px-2.5 py-1 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
+        disabled={page >= pages}
+        onClick={() => onPage(page + 1)}
+      >
+        {t("common.next", "Next")}
       </button>
     </nav>
   );

@@ -1,3 +1,5 @@
+import type { Translate } from "@/lib/i18n";
+
 /** Minimal RFC 4180 CSV parser (quoted fields, escaped quotes, CRLF). */
 export function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
@@ -43,18 +45,19 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /**
  * Parses `email,firstName,lastName` rows. A header row is detected and may list
  * the columns in any order. Duplicate emails and invalid rows are reported.
+ * Column names are fixed (the API/import format); `t` translates the error messages.
  */
-export function parseUserCsv(text: string, max = 1000): ImportParse {
+export function parseUserCsv(text: string, t: Translate, max = 1000): ImportParse {
   const table = parseCsv(text);
   const errors: string[] = [];
-  if (!table.length) return { rows: [], errors: ["The file is empty"] };
+  if (!table.length) return { rows: [], errors: [t("admin.csv.empty", "The file is empty")] };
   let idx = { email: 0, firstName: 1, lastName: 2 };
   let start = 0;
   const header = table[0]!.map((h) => h.trim().toLowerCase().replace(/[\s_]/g, ""));
   if (header.includes("email")) {
     const find = (...names: string[]) => header.findIndex((h) => names.includes(h));
     idx = { email: find("email"), firstName: find("firstname", "first", "givenname"), lastName: find("lastname", "last", "surname", "familyname") };
-    if (idx.firstName < 0 || idx.lastName < 0) return { rows: [], errors: ["Header must contain email, firstName and lastName"] };
+    if (idx.firstName < 0 || idx.lastName < 0) return { rows: [], errors: [t("admin.csv.badHeader", "Header must contain email, firstName and lastName")] };
     start = 1;
   }
   const seen = new Set<string>();
@@ -65,17 +68,17 @@ export function parseUserCsv(text: string, max = 1000): ImportParse {
     const firstName = (r[idx.firstName] ?? "").trim();
     const lastName = (r[idx.lastName] ?? "").trim();
     const line = i + 1;
-    if (!EMAIL.test(email)) errors.push(`Line ${line}: invalid email "${email}"`);
-    else if (!firstName || !lastName) errors.push(`Line ${line}: first and last name are required`);
-    else if (firstName.length > 100 || lastName.length > 100) errors.push(`Line ${line}: names must be at most 100 characters`);
-    else if (seen.has(email)) errors.push(`Line ${line}: duplicate email ${email}`);
+    if (!EMAIL.test(email)) errors.push(t("admin.csv.invalidEmail", "Line {line}: invalid email \"{email}\"", { line, email }));
+    else if (!firstName || !lastName) errors.push(t("admin.csv.namesRequired", "Line {line}: first and last name are required", { line }));
+    else if (firstName.length > 100 || lastName.length > 100) errors.push(t("admin.csv.namesTooLong", "Line {line}: names must be at most 100 characters", { line }));
+    else if (seen.has(email)) errors.push(t("admin.csv.duplicateEmail", "Line {line}: duplicate email {email}", { line, email }));
     else {
       seen.add(email);
       rows.push({ email, firstName, lastName });
     }
   }
   if (rows.length > max) {
-    errors.push(`Only the first ${max} rows can be imported at once`);
+    errors.push(t("admin.csv.tooMany", "Only the first {max} rows can be imported at once", { max }));
     rows.length = max;
   }
   return { rows, errors };

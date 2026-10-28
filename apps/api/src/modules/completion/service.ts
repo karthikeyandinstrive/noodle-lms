@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import {
   activities,
   activityCompletions,
@@ -6,13 +6,16 @@ import {
   courseSections,
   courses,
   enrolments,
+  gradeGrades,
+  gradeItems,
   roleAssignments,
   roles,
   type DB,
 } from "@lms/db";
 import { notify } from "../../core/notify";
 import type { FollowUp } from "./follow-ups";
-import { courseProgress, isDone, type CompletionRule, type CompletionState } from "./rules";
+import { gradebookUsers } from "../gradebook/service";
+import { courseProgress, isDone, stateForGrade, type CompletionRule, type CompletionState } from "./rules";
 
 type ActivityRow = typeof activities.$inferSelect;
 type CourseRow = typeof courses.$inferSelect;
@@ -174,4 +177,69 @@ export async function applyAutomatic(
   if (!result.changed) return [];
   const course = isDone(result.state) ? await evaluateCourseCompletion(tx, row.course, input.userId) : [];
   return [...result.followUps, ...course];
+}
+
+/**
+ * Re-derives one activity's automatic states from data already recorded, after its completion rule
+ * changed: "view" from the stored first view, "grade"/"pass" from the learner's gradebook grade.
+ * Teacher overrides are kept (automatic update). Other rules only change on the learner's next event.
+ */
+async function rederiveActivity(tx: DB, activity: ActivityRow, userIds: string[]): Promise<FollowUp[]> {
+  if (!userIds.length) return [];
+  const rule = activity.completionRule as CompletionRule;
+  const target = new Map<string, CompletionState>();
+  if (rule === "view") {
+    const viewed = await tx
+      .select({ userId: activityCompletions.userId })
+      .from(activityCompletions)
+      .where(and(eq(activityCompletions.activityId, activity.id), inArray(activityCompletions.userId, userIds), isNotNull(activityCompletions.viewedAt)));
+    for (const v of viewed) target.set(v.userId, "complete");
+  } else if (rule === "grade" || rule === "pass") {
+    const [item] = await tx.select().from(gradeItems).where(and(eq(gradeItems.activityId, activity.id), eq(gradeItems.type, "activity"))).limit(1);
+    if (item) {
+      const grades = await tx
+        .select({ userId: gradeGrades.userId, finalGrade: gradeGrades.finalGrade })
+        .from(gradeGrades)
+        .where(and(eq(gradeGrades.itemId, item.id), inArray(gradeGrades.userId, userIds)));
+      for (const g of grades) {
+        const state = stateForGrade(rule, g.finalGrade, item.gradePass);
+        if (state) target.set(g.userId, state);
+      }
+    }
+  }
+  const followUps: FollowUp[] = [];
+  for (const [userId, state] of target) {
+    followUps.push(...(await setActivityCompletion(tx, { activity, userId, state, automatic: true })).followUps);
+  }
+  return followUps;
+}
+
+/**
+ * Recomputes completion for every learner of a course after an activity changed (rule, visibility,
+ * section) or was deleted. Learners whose remaining tracked activities are now all done complete the
+ * course. Recorded course completions stay permanent; progress is always computed on read, so
+ * activities that stop counting simply drop out of it.
+ */
+export async function reevaluateCourse(tx: DB, courseId: string, changedActivityId?: string): Promise<FollowUp[]> {
+  const [course] = await tx.select().from(courses).where(eq(courses.id, courseId)).limit(1);
+  if (!course?.enableCompletion) return [];
+  const learnerIds = (await gradebookUsers(tx, course)).map((u) => u.id);
+  if (!learnerIds.length) return [];
+  const followUps: FollowUp[] = [];
+  if (changedActivityId) {
+    const row = await trackedActivity(tx, changedActivityId);
+    if (row) followUps.push(...(await rederiveActivity(tx, row.activity, learnerIds)));
+  }
+  const alreadyDone = new Set(
+    (
+      await tx
+        .select({ userId: courseCompletions.userId })
+        .from(courseCompletions)
+        .where(and(eq(courseCompletions.courseId, course.id), inArray(courseCompletions.userId, learnerIds)))
+    ).map((r) => r.userId),
+  );
+  for (const userId of learnerIds) {
+    if (!alreadyDone.has(userId)) followUps.push(...(await evaluateCourseCompletion(tx, course, userId)));
+  }
+  return followUps;
 }

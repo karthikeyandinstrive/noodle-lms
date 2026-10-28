@@ -10,9 +10,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, PageHeader, QueryState, formatDate, fullName } from "@/components/common";
+import { EmptyState, PageHeader, QueryState, fullName } from "@/components/common";
 import { courseKey, useCourse } from "@/features/courses/use-course";
 import { api, errorMessage, type Paged } from "@/lib/api";
+import { useFormat, useT, type Translate } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
 import { CohortEnrolDialog } from "./cohorts";
 import { ConfirmDialog, Field, NativeSelect, Pager, useDebounced } from "./shared";
@@ -21,7 +22,19 @@ import { UserPicker } from "./user-picker";
 
 export const participantsKey = (courseId: string) => ["course", courseId, "participants"] as const;
 
+const methodLabel = (method: string, t: Translate) =>
+  method === "manual"
+    ? t("admin.participants.method.manual", "Manual")
+    : method === "self"
+      ? t("admin.participants.method.self", "Self enrolment")
+      : method === "payment"
+        ? t("admin.participants.method.payment", "Payment")
+        : method === "cohort"
+          ? t("admin.participants.method.cohort", "Cohort")
+          : method;
+
 function EnrolUsersDialog({ courseId, canAssignRoles, open, onOpenChange }: { courseId: string; canAssignRoles: boolean; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const t = useT();
   const qc = useQueryClient();
   const [picked, setPicked] = useState<AdminUser[]>([]);
   const [role, setRole] = useState("student");
@@ -32,7 +45,7 @@ function EnrolUsersDialog({ courseId, canAssignRoles, open, onOpenChange }: { co
         body: { userIds: picked.map((u) => u.id), role, timeEnd: timeEnd ? new Date(`${timeEnd}T23:59:59`).toISOString() : null },
       }),
     onSuccess: (r) => {
-      toast.success(`${r.enrolled} user${r.enrolled === 1 ? "" : "s"} enrolled`);
+      toast.success(r.enrolled === 1 ? t("admin.participants.enrolled.one", "1 user enrolled") : t("admin.participants.enrolled.other", "{count} users enrolled", { count: r.enrolled }));
       void qc.invalidateQueries({ queryKey: participantsKey(courseId) });
       setPicked([]);
       onOpenChange(false);
@@ -44,18 +57,18 @@ function EnrolUsersDialog({ courseId, canAssignRoles, open, onOpenChange }: { co
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Enrol users</DialogTitle>
-          <DialogDescription>Search people in your organization and choose their role in this course.</DialogDescription>
+          <DialogTitle>{t("admin.participants.enrolUsers", "Enrol users")}</DialogTitle>
+          <DialogDescription>{t("admin.participants.enrolUsersHelp", "Search people in your organization and choose their role in this course.")}</DialogDescription>
         </DialogHeader>
         <UserPicker multi selected={picked.map((u) => u.id)} onPick={toggle} />
         {picked.length > 0 && (
-          <ul className="flex flex-wrap gap-1.5" aria-label="Selected users">
+          <ul className="flex flex-wrap gap-1.5" aria-label={t("admin.participants.selectedUsers", "Selected users")}>
             {picked.map((u) => (
               <li key={u.id}>
                 <Badge variant="secondary" className="gap-1 pr-0.5">
                   {fullName(u)}
-                  <Button variant="ghost" size="icon-xs" aria-label={`Remove ${fullName(u)}`} onClick={() => toggle(u)}>
-                    <X />
+                  <Button variant="ghost" size="icon-xs" aria-label={t("admin.shared.removeName", "Remove {name}", { name: fullName(u) })} onClick={() => toggle(u)}>
+                    <X aria-hidden />
                   </Button>
                 </Badge>
               </li>
@@ -63,25 +76,29 @@ function EnrolUsersDialog({ courseId, canAssignRoles, open, onOpenChange }: { co
           </ul>
         )}
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field id="enrol-role" label="Role">
+          <Field id="enrol-role" label={t("admin.roles.role", "Role")}>
             <NativeSelect id="enrol-role" value={role} onChange={(e) => setRole(e.target.value)}>
               {ENROL_ROLES.filter((r) => canAssignRoles || r.value === "student").map((r) => (
                 <option key={r.value} value={r.value}>
-                  {r.label}
+                  {t(r.key, r.label)}
                 </option>
               ))}
             </NativeSelect>
           </Field>
-          <Field id="enrol-end" label="Enrolment ends" hint="Optional.">
+          <Field id="enrol-end" label={t("admin.participants.enrolmentEnds", "Enrolment ends")} hint={t("admin.participants.optionalHint", "Optional.")}>
             <Input id="enrol-end" type="date" value={timeEnd} onChange={(e) => setTimeEnd(e.target.value)} />
           </Field>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t("common.cancel", "Cancel")}
           </Button>
           <Button disabled={!picked.length || enrol.isPending} onClick={() => enrol.mutate()}>
-            {enrol.isPending ? "Enrolling…" : `Enrol ${picked.length || ""}`.trim()}
+            {enrol.isPending
+              ? t("admin.shared.enrolling", "Enrolling…")
+              : picked.length
+                ? t("admin.participants.enrolCount", "Enrol {count}", { count: picked.length })
+                : t("admin.shared.enrol", "Enrol")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -90,12 +107,13 @@ function EnrolUsersDialog({ courseId, canAssignRoles, open, onOpenChange }: { co
 }
 
 function RolesDialog({ courseId, participant, onClose }: { courseId: string; participant: Participant; onClose: () => void }) {
+  const t = useT();
   const qc = useQueryClient();
   const [roles, setRoles] = useState<string[]>(participant.roles.filter((r) => ENROL_ROLES.some((x) => x.value === r)));
   const save = useMutation({
     mutationFn: () => api(`/courses/${courseId}/enrolments/${participant.id}`, { method: "PATCH", body: { roles } }),
     onSuccess: () => {
-      toast.success("Roles updated");
+      toast.success(t("admin.participants.rolesUpdated", "Roles updated"));
       void qc.invalidateQueries({ queryKey: participantsKey(courseId) });
       onClose();
     },
@@ -105,13 +123,13 @@ function RolesDialog({ courseId, participant, onClose }: { courseId: string; par
     <ConfirmDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title={`Roles for ${fullName(participant)}`}
-      confirmLabel="Save roles"
+      title={t("admin.participants.rolesFor", "Roles for {name}", { name: fullName(participant) })}
+      confirmLabel={t("admin.participants.saveRoles", "Save roles")}
       pending={save.isPending}
-      onConfirm={() => (roles.length ? save.mutate() : toast.error("Choose at least one role"))}
+      onConfirm={() => (roles.length ? save.mutate() : toast.error(t("admin.participants.chooseRole", "Choose at least one role")))}
     >
       <fieldset className="space-y-2">
-        <legend className="sr-only">Course roles</legend>
+        <legend className="sr-only">{t("admin.participants.courseRoles", "Course roles")}</legend>
         {ENROL_ROLES.map((r) => (
           <label key={r.value} className="flex items-center gap-2 text-sm">
             <input
@@ -119,7 +137,7 @@ function RolesDialog({ courseId, participant, onClose }: { courseId: string; par
               checked={roles.includes(r.value)}
               onChange={(e) => setRoles(e.target.checked ? [...roles, r.value] : roles.filter((x) => x !== r.value))}
             />
-            {r.label}
+            {t(r.key, r.label)}
           </label>
         ))}
       </fieldset>
@@ -128,6 +146,8 @@ function RolesDialog({ courseId, participant, onClose }: { courseId: string; par
 }
 
 export function CourseParticipants() {
+  const t = useT();
+  const fmt = useFormat();
   const course = useCourse();
   const session = useSession();
   const qc = useQueryClient();
@@ -154,7 +174,7 @@ export function CourseParticipants() {
   const setStatus = useMutation({
     mutationFn: (p: { userId: string; status: "active" | "suspended" }) => api(`/courses/${courseId}/enrolments/${p.userId}`, { method: "PATCH", body: { status: p.status } }),
     onSuccess: (_d, p) => {
-      toast.success(p.status === "suspended" ? "Enrolment suspended" : "Enrolment reactivated");
+      toast.success(p.status === "suspended" ? t("admin.participants.suspendedToast", "Enrolment suspended") : t("admin.participants.reactivatedToast", "Enrolment reactivated"));
       refresh();
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -162,7 +182,7 @@ export function CourseParticipants() {
   const unenrol = useMutation({
     mutationFn: (userId: string) => api(`/courses/${courseId}/enrolments/${userId}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("User unenrolled");
+      toast.success(t("admin.participants.unenrolled", "User unenrolled"));
       setRemoving(null);
       refresh();
     },
@@ -170,7 +190,7 @@ export function CourseParticipants() {
   });
 
   if (!course.data) return null;
-  if (!course.can("course:view_participants")) return <EmptyState title="You can't view participants in this course" />;
+  if (!course.can("course:view_participants")) return <EmptyState title={t("admin.participants.cantView", "You can't view participants in this course")} />;
   const canManage = course.can("course:enrol_manage");
   const canAssignRoles = course.can("role:assign");
   const canSearchUsers = session.can("user:view");
@@ -179,19 +199,19 @@ export function CourseParticipants() {
   return (
     <div>
       <PageHeader
-        title="Participants"
+        title={t("admin.participants.title", "Participants")}
         className="mb-4"
         actions={
           canManage && (
             <>
               {canCohort && (
                 <Button variant="outline" onClick={() => setCohortEnrol(true)}>
-                  <UsersRound /> Enrol cohort
+                  <UsersRound aria-hidden /> {t("admin.cohorts.enrolCohort", "Enrol cohort")}
                 </Button>
               )}
               {canSearchUsers && (
                 <Button onClick={() => setEnrolling(true)}>
-                  <UserPlus /> Enrol users
+                  <UserPlus aria-hidden /> {t("admin.participants.enrolUsers", "Enrol users")}
                 </Button>
               )}
             </>
@@ -200,12 +220,12 @@ export function CourseParticipants() {
       />
       <div className="mb-4 flex flex-col gap-2 sm:flex-row">
         <div className="relative flex-1">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Search aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="pl-8"
             type="search"
-            placeholder="Search participants"
-            aria-label="Search participants"
+            placeholder={t("admin.participants.search", "Search participants")}
+            aria-label={t("admin.participants.search", "Search participants")}
             value={search}
             onChange={(e) => {
               setSearch(e.target.value);
@@ -215,38 +235,38 @@ export function CourseParticipants() {
         </div>
         <NativeSelect
           className="sm:w-48"
-          aria-label="Filter by role"
+          aria-label={t("admin.participants.filterRole", "Filter by role")}
           value={role}
           onChange={(e) => {
             setRole(e.target.value);
             setPage(1);
           }}
         >
-          <option value="">All roles</option>
+          <option value="">{t("admin.participants.allRoles", "All roles")}</option>
           {ENROL_ROLES.map((r) => (
             <option key={r.value} value={r.value}>
-              {r.label}
+              {t(r.key, r.label)}
             </option>
           ))}
         </NativeSelect>
       </div>
       <QueryState query={participants}>
         {participants.data && participants.data.items.length === 0 ? (
-          <EmptyState title="No participants found" />
+          <EmptyState title={t("admin.participants.noneFound", "No participants found")} />
         ) : (
           participants.data && (
             <>
               <div className="overflow-x-auto rounded-xl border">
-                <Table>
+                <Table aria-label={t("admin.participants.title", "Participants")}>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Roles</TableHead>
-                      <TableHead className="hidden md:table-cell">Enrolled</TableHead>
-                      {canManage && <TableHead className="hidden lg:table-cell">Last sign-in</TableHead>}
+                      <TableHead>{t("common.name", "Name")}</TableHead>
+                      <TableHead>{t("admin.participants.roles", "Roles")}</TableHead>
+                      <TableHead className="hidden md:table-cell">{t("admin.participants.enrolledCol", "Enrolled")}</TableHead>
+                      {canManage && <TableHead className="hidden lg:table-cell">{t("admin.shared.lastSignIn", "Last sign-in")}</TableHead>}
                       {canManage && (
                         <TableHead>
-                          <span className="sr-only">Actions</span>
+                          <span className="sr-only">{t("common.actions", "Actions")}</span>
                         </TableHead>
                       )}
                     </TableRow>
@@ -260,36 +280,40 @@ export function CourseParticipants() {
                         </TableCell>
                         <TableCell>
                           <div className="flex flex-wrap gap-1">
-                            {p.roles.length === 0 && <span className="text-xs text-muted-foreground">No role</span>}
+                            {p.roles.length === 0 && <span className="text-xs text-muted-foreground">{t("admin.participants.noRole", "No role")}</span>}
                             {p.roles.map((r) => (
                               <Badge key={r} variant="secondary">
-                                {roleLabel(r)}
+                                {roleLabel(r, t)}
                               </Badge>
                             ))}
-                            {p.status === "suspended" && <Badge variant="destructive">Suspended</Badge>}
+                            {p.status === "suspended" && <Badge variant="destructive">{t("admin.shared.suspended", "Suspended")}</Badge>}
                           </div>
                         </TableCell>
                         <TableCell className="hidden text-muted-foreground md:table-cell">
-                          {formatDate(p.enrolledAt, false)}
-                          <div className="text-xs capitalize">{p.method}</div>
+                          {fmt.date(p.enrolledAt, false)}
+                          <div className="text-xs">{methodLabel(p.method, t)}</div>
                         </TableCell>
-                        {canManage && <TableCell className="hidden text-muted-foreground lg:table-cell">{formatDate(p.lastLoginAt)}</TableCell>}
+                        {canManage && <TableCell className="hidden text-muted-foreground lg:table-cell">{fmt.date(p.lastLoginAt)}</TableCell>}
                         {canManage && (
                           <TableCell className="text-right">
                             <DropdownMenu>
-                              <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`Actions for ${fullName(p)}`} />}>
-                                <MoreHorizontal />
+                              <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={t("admin.participants.actionsFor", "Actions for {name}", { name: fullName(p) })} />}>
+                                <MoreHorizontal aria-hidden />
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
-                                {canAssignRoles && <DropdownMenuItem onClick={() => setEditingRoles(p)}>Change roles</DropdownMenuItem>}
+                                {canAssignRoles && <DropdownMenuItem onClick={() => setEditingRoles(p)}>{t("admin.participants.changeRoles", "Change roles")}</DropdownMenuItem>}
                                 {p.status === "active" ? (
-                                  <DropdownMenuItem onClick={() => setStatus.mutate({ userId: p.id, status: "suspended" })}>Suspend enrolment</DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => setStatus.mutate({ userId: p.id, status: "suspended" })}>
+                                    {t("admin.participants.suspendEnrolment", "Suspend enrolment")}
+                                  </DropdownMenuItem>
                                 ) : (
-                                  <DropdownMenuItem onClick={() => setStatus.mutate({ userId: p.id, status: "active" })}>Reactivate enrolment</DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => setStatus.mutate({ userId: p.id, status: "active" })}>
+                                    {t("admin.participants.reactivateEnrolment", "Reactivate enrolment")}
+                                  </DropdownMenuItem>
                                 )}
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem variant="destructive" onClick={() => setRemoving(p)}>
-                                  Unenrol
+                                  {t("admin.participants.unenrol", "Unenrol")}
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
@@ -311,9 +335,9 @@ export function CourseParticipants() {
       <ConfirmDialog
         open={!!removing}
         onOpenChange={(o) => !o && setRemoving(null)}
-        title={`Unenrol ${removing ? fullName(removing) : ""}?`}
-        description="They lose access to the course and their course roles. Grades and submissions are kept."
-        confirmLabel="Unenrol"
+        title={t("admin.participants.unenrolTitle", "Unenrol {name}?", { name: removing ? fullName(removing) : "" })}
+        description={t("admin.participants.unenrolDescription", "They lose access to the course and their course roles. Grades and submissions are kept.")}
+        confirmLabel={t("admin.participants.unenrol", "Unenrol")}
         destructive
         pending={unenrol.isPending}
         onConfirm={() => removing && unenrol.mutate(removing.id)}

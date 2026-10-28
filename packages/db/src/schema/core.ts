@@ -76,7 +76,7 @@ export const sessions = pgTable(
   (t) => [index("sessions_user_idx").on(t.userId)],
 );
 
-export const authTokenPurpose = pgEnum("auth_token_purpose", ["password_reset", "email_verify", "invite"]);
+export const authTokenPurpose = pgEnum("auth_token_purpose", ["password_reset", "email_verify", "invite", "mfa_challenge"]);
 
 export const authTokens = pgTable("auth_tokens", {
   id: id(),

@@ -3,34 +3,38 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, CalendarClock } from "lucide-react";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState, QueryState } from "@/components/common";
 import { CourseProgress } from "@/features/completion/progress-bar";
 import { useProgressMap } from "@/features/completion/use-progress";
-import { TYPE_LABELS, TYPE_STYLES, calendarKey, type CalendarItem } from "@/features/calendar/types";
+import { TYPE_STYLES, calendarKey, typeLabel, type CalendarItem } from "@/features/calendar/types";
 import { CourseCard } from "@/features/courses/course-list";
 import { NotificationItem, useRecentNotifications } from "@/features/notifications/notification-center";
 import { api, type Paged } from "@/lib/api";
+import { type Translate, useLocale, useT } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
 import type { Course } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-function greeting() {
+function greeting(t: Translate, name: string | undefined) {
   const h = new Date().getHours();
-  return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+  const part = h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
+  const fallback = { morning: "Good morning", afternoon: "Good afternoon", evening: "Good evening" }[part];
+  return name ? t(`dashboard.greeting.${part}Named`, `${fallback}, {name}`, { name }) : t(`dashboard.greeting.${part}`, fallback);
 }
 
-function relativeDay(d: Date) {
+function relativeDay(d: Date, t: Translate, locale: string) {
   const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const days = Math.round((startOf(d) - startOf(new Date())) / 86_400_000);
-  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  if (days === 0) return `Today, ${time}`;
-  if (days === 1) return `Tomorrow, ${time}`;
-  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + `, ${time}`;
+  const time = d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  if (days === 0) return t("dashboard.todayAt", "Today, {time}", { time });
+  if (days === 1) return t("dashboard.tomorrowAt", "Tomorrow, {time}", { time });
+  return `${d.toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" })}, ${time}`;
 }
 
 function MyCourses() {
+  const t = useT();
   const query = useQuery({
     queryKey: ["courses", { mine: true, search: "", page: 1, dashboard: true }],
     queryFn: () => api<Paged<Course>>("/courses", { query: { mine: true, page: 1, pageSize: 6 } }),
@@ -40,12 +44,12 @@ function MyCourses() {
     <section aria-labelledby="dash-courses" className="space-y-3">
       <div className="flex items-center justify-between">
         <h2 id="dash-courses" className="text-lg font-semibold">
-          My courses
+          {t("nav.myCourses", "My courses")}
         </h2>
         {!!query.data?.total && query.data.total > query.data.items.length && (
-          <Button variant="link" size="sm" render={<Link href="/courses?mine=1" />}>
-            All courses <ArrowRight />
-          </Button>
+          <Link href="/courses?mine=1" className={buttonVariants({ variant: "link", size: "sm" })}>
+            {t("dashboard.allCourses", "All courses")} <ArrowRight aria-hidden />
+          </Link>
         )}
       </div>
       <QueryState query={query}>
@@ -61,7 +65,14 @@ function MyCourses() {
             ))}
           </div>
         ) : (
-          <EmptyState title="You're not enrolled in any courses yet" action={<Button render={<Link href="/catalog" />}>Browse the catalog</Button>} />
+          <EmptyState
+            title={t("dashboard.notEnrolled", "You're not enrolled in any courses yet")}
+            action={
+              <Link href="/catalog" className={buttonVariants()}>
+                {t("dashboard.browseCatalog", "Browse the catalog")}
+              </Link>
+            }
+          />
         )}
       </QueryState>
     </section>
@@ -69,16 +80,18 @@ function MyCourses() {
 }
 
 function Upcoming() {
+  const t = useT();
+  const locale = useLocale();
   const query = useQuery({ queryKey: [...calendarKey, "upcoming"], queryFn: () => api<CalendarItem[]>("/calendar/upcoming", { query: { limit: 8 } }) });
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="flex items-center gap-2 text-base">
-          <CalendarClock className="size-4" aria-hidden /> Upcoming
+          <CalendarClock className="size-4" aria-hidden /> {t("dashboard.upcoming", "Upcoming")}
         </CardTitle>
-        <Button variant="link" size="sm" render={<Link href="/calendar" />}>
-          Calendar
-        </Button>
+        <Link href="/calendar" className={buttonVariants({ variant: "link", size: "sm" })}>
+          {t("nav.calendar", "Calendar")}
+        </Link>
       </CardHeader>
       <CardContent>
         <QueryState query={query}>
@@ -87,7 +100,7 @@ function Upcoming() {
               {query.data.map((e) => (
                 <li key={e.id} className="py-2.5">
                   <div className="flex items-start gap-2">
-                    <span className={cn("mt-0.5 shrink-0 rounded px-1 text-[11px]", TYPE_STYLES[e.type])}>{TYPE_LABELS[e.type]}</span>
+                    <span className={cn("mt-0.5 shrink-0 rounded px-1 text-[11px]", TYPE_STYLES[e.type])}>{typeLabel(t, e.type)}</span>
                     <div className="min-w-0">
                       {e.link ? (
                         <Link href={e.link} className="block truncate text-sm font-medium hover:underline">
@@ -97,7 +110,7 @@ function Upcoming() {
                         <p className="truncate text-sm font-medium">{e.name}</p>
                       )}
                       <p className="text-xs text-muted-foreground">
-                        {relativeDay(new Date(e.startsAt))}
+                        {relativeDay(new Date(e.startsAt), t, locale)}
                         {e.courseName && ` · ${e.courseName}`}
                       </p>
                     </div>
@@ -106,7 +119,7 @@ function Upcoming() {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-muted-foreground">Nothing due in the next two weeks.</p>
+            <p className="text-sm text-muted-foreground">{t("dashboard.nothingDue", "Nothing due in the next two weeks.")}</p>
           )}
         </QueryState>
       </CardContent>
@@ -115,14 +128,15 @@ function Upcoming() {
 }
 
 function RecentNotifications() {
+  const t = useT();
   const query = useRecentNotifications(5);
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-base">Recent notifications</CardTitle>
-        <Button variant="link" size="sm" render={<Link href="/notifications" />}>
-          View all
-        </Button>
+        <CardTitle className="text-base">{t("dashboard.recentNotifications", "Recent notifications")}</CardTitle>
+        <Link href="/notifications" className={buttonVariants({ variant: "link", size: "sm" })}>
+          {t("dashboard.viewAll", "View all")}
+        </Link>
       </CardHeader>
       <CardContent>
         <QueryState query={query}>
@@ -133,7 +147,7 @@ function RecentNotifications() {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-muted-foreground">You&apos;re all caught up.</p>
+            <p className="text-sm text-muted-foreground">{t("dashboard.allCaughtUp", "You're all caught up.")}</p>
           )}
         </QueryState>
       </CardContent>
@@ -143,18 +157,18 @@ function RecentNotifications() {
 
 export default function DashboardPage() {
   const { user } = useSession();
+  const t = useT();
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">
-          {greeting()}
-          {user ? `, ${user.firstName}` : ""}
+          {greeting(t, user?.firstName)}
         </h1>
-        <p className="mt-1 text-sm text-muted-foreground">Here&apos;s what&apos;s happening in your courses.</p>
+        <p className="mt-1 text-sm text-muted-foreground">{t("dashboard.subtitle", "Here's what's happening in your courses.")}</p>
       </div>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <MyCourses />
-        <aside className="space-y-6" aria-label="Upcoming and notifications">
+        <aside className="space-y-6" aria-label={t("dashboard.asideLabel", "Upcoming and notifications")}>
           <Upcoming />
           <RecentNotifications />
         </aside>

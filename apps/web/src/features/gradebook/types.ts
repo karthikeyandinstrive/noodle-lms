@@ -1,5 +1,7 @@
 /** Shapes returned by the gradebook API (/api/v1/grades). */
 
+import type { Translate } from "@/lib/i18n";
+
 export type Aggregation = "mean" | "weighted_mean" | "sum" | "highest" | "lowest" | "median";
 export type GradeItemType = "activity" | "manual" | "category" | "course";
 
@@ -90,15 +92,20 @@ export const AGGREGATION_LABELS: Record<Aggregation, string> = {
   median: "Median",
 };
 
+/** Translated aggregation label (English fallback from AGGREGATION_LABELS). */
+export function aggregationLabel(t: Translate, a: Aggregation) {
+  return t(`grades.aggregation.${a}`, AGGREGATION_LABELS[a]);
+}
+
 export const gradesKey = (courseId: string) => ["grades", courseId] as const;
 
 /** Formats a grade with at most 2 decimals; "–" when empty. */
-export function fmtGrade(value: number | null | undefined) {
+export function fmtGrade(value: number | null | undefined, locale?: string) {
   if (value === null || value === undefined) return "–";
-  return (Math.round(value * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return (Math.round(value * 100) / 100).toLocaleString(locale, { maximumFractionDigits: 2 });
 }
 
-export function fmtPercent(value: number | null | undefined) {
+export function fmtPercent(value: number | null | undefined, locale?: string) {
   if (value === null || value === undefined) return "–";
-  return `${(Math.round(value * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+  return (Math.round(value * 10) / 1000).toLocaleString(locale, { style: "percent", maximumFractionDigits: 1 });
 }

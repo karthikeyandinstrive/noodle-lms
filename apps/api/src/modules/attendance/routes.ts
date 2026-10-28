@@ -7,7 +7,7 @@ import { AppError, badRequest, conflict, forbidden, notFound } from "../../core/
 import { emit, type EventMap } from "../../core/events";
 import { requireCapability } from "../../core/rbac";
 import { safeEqual, sha256 } from "../../core/crypto";
-import { ok, zDate, zDateInput, zId, zNullableDate, zOk } from "../../core/schemas";
+import { ok, zDate, zDateInput, zId, zNullableDate, zOk, patchSchema } from "../../core/schemas";
 import { courseGroups, groupInCourse, learnerIds, userSummaries } from "../forum/people";
 import { STATUSES, toCsv, weeklyOccurrences, withinSession, type AttendanceStatus } from "./logic";
 import {
@@ -261,7 +261,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags,
         summary: "Update a session (attendance:take). selfMarkCode: null removes the code.",
         params: sessionParams,
-        body: zSessionInput.partial(),
+        body: patchSchema(zSessionInput),
         response: { 200: zOk },
       },
     },
@@ -516,7 +516,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         response: {
           200: z.object({
             sessions: z.array(z.object({ id: zId, startsAt: zDate, groupId: zId.nullable(), groupName: z.string().nullable(), taken: z.boolean() })),
-            rows: z.array(z.object({ user: zPerson, statuses: z.record(zStatus.nullable()), summary: zSummary })),
+            rows: z.array(z.object({ user: zPerson, statuses: z.record(z.string(), zStatus.nullable()), summary: zSummary })),
           }),
         },
       },

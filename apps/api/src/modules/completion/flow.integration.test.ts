@@ -4,6 +4,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeDb } from "@lms/db";
+import { dispatchPendingEvents } from "../../core/events";
 import { Client, PASSWORD, setup, type TestEnv } from "../../../test/helpers";
 
 let env: TestEnv;
@@ -14,9 +15,9 @@ let courseId: string;
 let viewPageId: string;
 let manualPageId: string;
 
-/** Lets follow-up events scheduled with setImmediate (completion) run. */
+/** Dispatches outbox events (emitInTx follow-ups) the way the worker would. */
 const settle = async () => {
-  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 20));
+  while ((await dispatchPendingEvents(50)) > 0);
 };
 
 beforeAll(async () => {
@@ -249,5 +250,58 @@ describe("reports", () => {
     expect(site.body.users).toBeGreaterThanOrEqual(2);
     expect(site.body.completions).toBe(1);
     expect(site.body.topCourses[0].shortname).toBe("BIO");
+  });
+});
+
+describe("completion re-evaluation", () => {
+  let course2: string;
+  const acts: Record<string, string> = {};
+
+  beforeAll(async () => {
+    const c = await admin.req("POST", "/courses", { fullname: "Chemistry", shortname: "CHEM" });
+    expect(c.status).toBe(201);
+    course2 = c.body.id;
+    expect((await admin.req("POST", `/courses/${course2}/enrolments`, { userIds: [studentId] })).status).toBe(200);
+    const sectionId = (await admin.req("GET", `/courses/${course2}`)).body.sections[0].id;
+    for (const name of ["A", "B", "C"]) {
+      const res = await admin.req("POST", `/courses/${course2}/activities`, { sectionId, name, type: "page", completionRule: "manual", settings: { content: "<p>x</p>" } });
+      expect(res.status).toBe(201);
+      acts[name] = res.body.id;
+    }
+    expect((await student.req("POST", `/completion/activities/${acts.A}/manual`, { completed: true })).status).toBe(200);
+    expect((await student.req("GET", `/activities/${acts.B}`)).status).toBe(200); // view recorded, rule is manual
+    await settle();
+  });
+
+  const mine = async () => (await student.req("GET", `/completion/courses/${course2}/me`)).body;
+
+  it("re-derives states from recorded views when a rule changes to view", async () => {
+    expect(await mine()).toMatchObject({ total: 3, completed: 1, completedAt: null });
+    expect((await admin.req("PATCH", `/activities/${acts.B}`, { completionRule: "view" })).status).toBe(200);
+    await settle();
+    expect(await mine()).toMatchObject({ total: 3, completed: 2, completedAt: null });
+  });
+
+  it("completes the course when the last incomplete activity is hidden", async () => {
+    expect((await admin.req("PATCH", `/activities/${acts.C}`, { visible: false })).status).toBe(200);
+    await settle();
+    const me = await mine();
+    expect(me).toMatchObject({ total: 2, completed: 2, percentage: 100 });
+    expect(me.completedAt).not.toBeNull();
+    const list = await student.req("GET", "/notifications?unread=true");
+    expect(list.body.items.filter((n: { type: string; link: string }) => n.type === "course_completed" && n.link === `/courses/${course2}`)).toHaveLength(1);
+  });
+
+  it("keeps the recorded course completion when the activity is shown again or deleted", async () => {
+    expect((await admin.req("PATCH", `/activities/${acts.C}`, { visible: true })).status).toBe(200);
+    await settle();
+    let me = await mine();
+    expect(me.total).toBe(3);
+    expect(me.completedAt).not.toBeNull();
+    expect((await admin.req("DELETE", `/activities/${acts.A}`)).status).toBe(200);
+    await settle();
+    me = await mine();
+    expect(me.total).toBe(2);
+    expect(me.completedAt).not.toBeNull();
   });
 });

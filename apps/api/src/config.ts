@@ -50,6 +50,13 @@ const schema = z.object({
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_PRICE_PRO: z.string().optional(),
+
+  /** Bearer token for GET /metrics (Prometheus). The endpoint returns 404 when unset. */
+  METRICS_TOKEN: z
+    .string()
+    .optional()
+    .transform((v) => v || undefined)
+    .refine((v) => !v || v.length >= 16, "must be at least 16 characters"),
 });
 
 const parsed = schema.safeParse(process.env);

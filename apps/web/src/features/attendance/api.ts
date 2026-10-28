@@ -2,11 +2,15 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import type { Translate } from "@/lib/i18n";
 
 export const STATUSES = ["present", "late", "excused", "absent"] as const;
 export type AttendanceStatus = (typeof STATUSES)[number];
 export const STATUS_LABELS: Record<AttendanceStatus, string> = { present: "Present", late: "Late", excused: "Excused", absent: "Absent" };
 export const STATUS_SHORT: Record<AttendanceStatus, string> = { present: "P", late: "L", excused: "E", absent: "A" };
+/** Translated status label / one-letter abbreviation. */
+export const statusLabel = (t: Translate, s: AttendanceStatus) => t(`attendance.status.${s}`, STATUS_LABELS[s]);
+export const statusShort = (t: Translate, s: AttendanceStatus) => t(`attendance.statusShort.${s}`, STATUS_SHORT[s]);
 export const STATUS_CLASSES: Record<AttendanceStatus, string> = {
   present: "bg-emerald-600 text-white hover:bg-emerald-600/90 dark:bg-emerald-500",
   late: "bg-amber-500 text-white hover:bg-amber-500/90",
@@ -80,10 +84,10 @@ export const useReport = (id: string, enabled: boolean) =>
 
 export const csvUrl = (id: string) => `/api/v1/attendance/${id}/report.csv`;
 
-export function sessionTime(s: { startsAt: string; durationMinutes: number }) {
+export function sessionTime(s: { startsAt: string; durationMinutes: number }, locale?: string) {
   const start = new Date(s.startsAt);
   const end = new Date(start.getTime() + s.durationMinutes * 60_000);
-  const date = start.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
-  const t = (d: Date) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const date = start.toLocaleDateString(locale, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  const t = (d: Date) => d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
   return `${date}, ${t(start)}–${t(end)}`;
 }

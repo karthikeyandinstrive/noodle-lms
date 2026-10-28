@@ -116,6 +116,24 @@ export const CAPABILITIES = {
   "calendar:manage_site": { description: "Manage site calendar events", level: "system", defaults: STAFF },
   "calendar:manage_course": { description: "Manage course calendar events", level: "course", defaults: EDITORS },
   "notification:send": { description: "Send notifications to course participants", level: "course", defaults: GRADERS },
+
+  // messaging
+  "message:send": { description: "Send private messages to people in your courses", level: "system", defaults: [...GRADERS, "student"] },
+  "message:send_any": { description: "Message any user in the organization", level: "system", defaults: STAFF },
+
+  // interoperability
+  "lti:manage_tools": { description: "Register external LTI tools", level: "system", risky: true, defaults: ["org_admin"] },
+  "lti:launch": { description: "Launch external tools", level: "activity", defaults: [...GRADERS, "student"] },
+  "scorm:attempt": { description: "Attempt SCORM packages", level: "activity", defaults: ["student"] },
+  "scorm:view_reports": { description: "View SCORM attempts of all learners", level: "activity", defaults: GRADERS },
+
+  // backup / restore
+  "course:backup": { description: "Back up courses", level: "course", defaults: EDITORS },
+  "course:restore": { description: "Restore courses from a backup", level: "category", risky: true, defaults: [...STAFF, "course_creator"] },
+
+  // platform
+  "site:manage_sso": { description: "Configure single sign-on", level: "system", risky: true, defaults: ["org_admin"] },
+  "site:view_system": { description: "View background jobs and system health", level: "system", defaults: ["org_admin"] },
 } as const satisfies Record<string, CapabilityDef>;
 
 export type Capability = keyof typeof CAPABILITIES;

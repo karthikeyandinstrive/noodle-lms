@@ -10,7 +10,7 @@ import { offset, paged, zId, zNullableDate, zPagination, zUserSummary } from "..
 import { loadActivity } from "../activities/service";
 import { loadCourse, loadCourseWith } from "../courses/service";
 import { gradebookUsers } from "../gradebook/service";
-import { emitAll } from "./follow-ups";
+import { emitFollowUps } from "./follow-ups";
 import { COMPLETION_STATES, courseProgress, isDone, type CompletionRule, type CompletionState } from "./rules";
 import { evaluateCourseCompletion, isActiveParticipant, setActivityCompletion, statesFor, trackedCourseActivities } from "./service";
 
@@ -31,7 +31,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     },
     async (req) => {
       const me = requireUser(req);
-      const { state, followUps } = await req.tenant(async (tx) => {
+      const state = await req.tenant(async (tx) => {
         const { activity, course } = await loadActivity(tx, req, req.params.activityId);
         if (activity.completionRule !== "manual") throw badRequest("This activity is not marked complete manually");
         if (!course.enableCompletion) throw badRequest("Completion tracking is disabled in this course");
@@ -44,9 +44,9 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           overriddenBy: null,
         });
         const courseFollowUps = result.changed && isDone(result.state) ? await evaluateCourseCompletion(tx, course, me.id) : [];
-        return { state: result.state, followUps: [...result.followUps, ...courseFollowUps] };
+        await emitFollowUps(tx, [...result.followUps, ...courseFollowUps]);
+        return result.state;
       });
-      await emitAll(followUps);
       return { state };
     },
   );
@@ -64,7 +64,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     },
     async (req) => {
       const me = requireUser(req);
-      const { state, followUps } = await req.tenant(async (tx) => {
+      const state = await req.tenant(async (tx) => {
         const { activity, course } = await loadActivity(tx, req, req.params.activityId, { capability: "completion:override" });
         if (activity.completionRule === "none") throw badRequest("This activity does not track completion");
         if (!(await isActiveParticipant(tx, course.id, req.params.userId))) throw notFound("User");
@@ -77,9 +77,9 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         });
         await audit(tx, req, "completion.overridden", { type: "activity", id: activity.id }, { userId: req.params.userId, state: req.body.state });
         const courseFollowUps = result.changed && isDone(result.state) ? await evaluateCourseCompletion(tx, course, req.params.userId) : [];
-        return { state: result.state, followUps: [...result.followUps, ...courseFollowUps] };
+        await emitFollowUps(tx, [...result.followUps, ...courseFollowUps]);
+        return result.state;
       });
-      await emitAll(followUps);
       return { state };
     },
   );

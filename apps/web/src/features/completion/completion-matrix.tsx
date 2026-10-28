@@ -17,10 +17,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { EmptyState, QueryState, formatDate, fullName } from "@/components/common";
+import { EmptyState, QueryState, fullName } from "@/components/common";
 import { courseKey } from "@/features/courses/use-course";
 import { api, errorMessage } from "@/lib/api";
-import { RULE_LABELS, STATE_LABELS, type CompletionReport, type CompletionState } from "./types";
+import { useFormat, useT } from "@/lib/i18n";
+import { ruleLabel, stateLabel, type CompletionReport, type CompletionState } from "./types";
 
 export function StateIcon({ state, className = "size-5" }: { state: CompletionState; className?: string }) {
   if (state === "complete" || state === "complete_pass") return <CheckCircle2 className={`${className} text-green-600`} aria-hidden />;
@@ -42,10 +43,11 @@ function OverrideCell({
   overridden: boolean;
 }) {
   const qc = useQueryClient();
+  const t = useT();
   const override = useMutation({
     mutationFn: (next: CompletionState) => api(`/completion/activities/${activity.id}/users/${user.id}/override`, { body: { state: next } }),
     onSuccess: () => {
-      toast.success("Completion updated");
+      toast.success(t("completion.updated", "Completion updated"));
       void qc.invalidateQueries({ queryKey: ["completion", courseId] });
       void qc.invalidateQueries({ queryKey: courseKey(courseId) });
     },
@@ -59,7 +61,11 @@ function OverrideCell({
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label={`${fullName(user)}, ${activity.name}: ${STATE_LABELS[state]}${overridden ? " (overridden)" : ""}. Change`}
+            aria-label={
+              overridden
+                ? t("completion.cellLabelOverridden", "{user}, {activity}: {state} (overridden). Change", { user: fullName(user), activity: activity.name, state: stateLabel(t, state) })
+                : t("completion.cellLabel", "{user}, {activity}: {state}. Change", { user: fullName(user), activity: activity.name, state: stateLabel(t, state) })
+            }
             disabled={override.isPending}
             className="relative"
           />
@@ -71,11 +77,11 @@ function OverrideCell({
       <DropdownMenuContent>
         {/* GroupLabel must live inside a (radio) group in Base UI. */}
         <DropdownMenuRadioGroup value={state} onValueChange={(v) => v !== state && override.mutate(v as CompletionState)}>
-          <DropdownMenuLabel>Override completion</DropdownMenuLabel>
+          <DropdownMenuLabel>{t("completion.override", "Override completion")}</DropdownMenuLabel>
           <DropdownMenuSeparator />
           {states.map((s) => (
             <DropdownMenuRadioItem key={s} value={s}>
-              {STATE_LABELS[s]}
+              {stateLabel(t, s)}
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
@@ -85,6 +91,8 @@ function OverrideCell({
 }
 
 export function CompletionMatrix({ courseId }: { courseId: string }) {
+  const t = useT();
+  const fmt = useFormat();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const query = useQuery({
@@ -102,8 +110,9 @@ export function CompletionMatrix({ courseId }: { courseId: string }) {
         <Search className="absolute top-2 left-2.5 size-4 text-muted-foreground" aria-hidden />
         <Input
           className="pl-8"
-          placeholder="Search learners"
-          aria-label="Search learners"
+          type="search"
+          placeholder={t("completion.searchLearners", "Search learners")}
+          aria-label={t("completion.searchLearners", "Search learners")}
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);
@@ -114,18 +123,24 @@ export function CompletionMatrix({ courseId }: { courseId: string }) {
       <QueryState query={query}>
         {data &&
           (!data.course.enableCompletion ? (
-            <EmptyState title="Completion tracking is off" description="Enable completion tracking in the course settings to use this report." />
+            <EmptyState
+              title={t("completion.trackingOff", "Completion tracking is off")}
+              description={t("completion.trackingOffHint", "Enable completion tracking in the course settings to use this report.")}
+            />
           ) : !data.activities.length ? (
-            <EmptyState title="No activities track completion" description="Set a completion rule on activities to follow learners' progress here." />
+            <EmptyState
+              title={t("completion.noTrackedActivities", "No activities track completion")}
+              description={t("completion.noTrackedActivitiesHint", "Set a completion rule on activities to follow learners' progress here.")}
+            />
           ) : (
             <>
               <div className="overflow-x-auto rounded-lg border">
                 <table className="w-full border-collapse text-sm">
-                  <caption className="sr-only">Activity completion: learners in rows, activities in columns</caption>
+                  <caption className="sr-only">{t("completion.caption", "Activity completion: learners in rows, activities in columns")}</caption>
                   <thead className="bg-muted/50">
                     <tr>
                       <th scope="col" className="sticky left-0 z-10 min-w-44 bg-muted px-3 py-2 text-left font-medium">
-                        Learner
+                        {t("completion.learner", "Learner")}
                       </th>
                       {data.activities.map((a) => (
                         <th key={a.id} scope="col" className="min-w-20 px-2 py-2 align-bottom font-medium">
@@ -133,13 +148,18 @@ export function CompletionMatrix({ courseId }: { courseId: string }) {
                             {a.name}
                           </Link>
                           <span className="mt-0.5 flex items-center justify-center gap-1 text-[11px] font-normal text-muted-foreground">
-                            {!a.visible && <EyeOff className="size-3" aria-label="Hidden" />}
-                            {RULE_LABELS[a.completionRule]}
+                            {!a.visible && (
+                              <>
+                                <EyeOff className="size-3" aria-hidden />
+                                <span className="sr-only">{t("common.hidden", "Hidden")},</span>
+                              </>
+                            )}
+                            {ruleLabel(t, a.completionRule)}
                           </span>
                         </th>
                       ))}
                       <th scope="col" className="px-3 py-2 text-left font-medium">
-                        Course
+                        {t("completion.courseColumn", "Course")}
                       </th>
                     </tr>
                   </thead>
@@ -148,7 +168,7 @@ export function CompletionMatrix({ courseId }: { courseId: string }) {
                       <tr key={u.id} className="border-t">
                         <th scope="row" className="sticky left-0 z-10 bg-background px-3 py-1.5 text-left font-normal">
                           <div className="font-medium">{fullName(u)}</div>
-                          <div className="text-xs text-muted-foreground">{u.progress}% complete</div>
+                          <div className="text-xs text-muted-foreground">{t("completion.percentComplete", "{percent}% complete", { percent: u.progress })}</div>
                         </th>
                         {data.activities.map((a) => {
                           const s = stateOf.get(`${a.id}:${u.id}`);
@@ -158,9 +178,9 @@ export function CompletionMatrix({ courseId }: { courseId: string }) {
                               {data.canOverride ? (
                                 <OverrideCell courseId={courseId} activity={a} user={u} state={state} overridden={!!s?.overridden} />
                               ) : (
-                                <span className="inline-flex" title={STATE_LABELS[state]}>
+                                <span className="inline-flex" title={stateLabel(t, state)}>
                                   <StateIcon state={state} />
-                                  <span className="sr-only">{STATE_LABELS[state]}</span>
+                                  <span className="sr-only">{stateLabel(t, state)}</span>
                                 </span>
                               )}
                             </td>
@@ -168,11 +188,11 @@ export function CompletionMatrix({ courseId }: { courseId: string }) {
                         })}
                         <td className="px-3 py-1.5 whitespace-nowrap">
                           {u.completedAt ? (
-                            <Badge className="bg-green-600 text-white" title={formatDate(u.completedAt)}>
-                              Completed
+                            <Badge className="bg-green-600 text-white" title={fmt.date(u.completedAt)}>
+                              {t("completion.state.complete", "Completed")}
                             </Badge>
                           ) : (
-                            <span className="text-muted-foreground">In progress</span>
+                            <span className="text-muted-foreground">{t("completion.inProgress", "In progress")}</span>
                           )}
                         </td>
                       </tr>
@@ -182,19 +202,20 @@ export function CompletionMatrix({ courseId }: { courseId: string }) {
               </div>
               {data.canOverride && (
                 <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ShieldCheck className="size-3.5" aria-hidden /> Select a cell to override a learner&apos;s completion. An amber dot marks overridden states; automatic rules no longer change them.
+                  <ShieldCheck className="size-3.5" aria-hidden />{" "}
+                  {t("completion.overrideHint", "Select a cell to override a learner's completion. An amber dot marks overridden states; automatic rules no longer change them.")}
                 </p>
               )}
               {pages > 1 && (
                 <div className="flex items-center justify-center gap-2">
                   <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                    Previous
+                    {t("common.previous", "Previous")}
                   </Button>
-                  <span className="text-sm text-muted-foreground">
-                    Page {page} of {pages}
+                  <span className="text-sm text-muted-foreground" aria-live="polite">
+                    {t("catalog.pageOf", "Page {page} of {pages}", { page, pages })}
                   </span>
                   <Button variant="outline" size="sm" disabled={page >= pages} onClick={() => setPage(page + 1)}>
-                    Next
+                    {t("common.next", "Next")}
                   </Button>
                 </div>
               )}

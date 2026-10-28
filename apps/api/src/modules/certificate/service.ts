@@ -16,17 +16,17 @@ import {
   type DB,
 } from "@lms/db";
 import { z } from "zod";
-import { config } from "../../config";
 import { registerActivityType, type ActivityRow } from "../../core/activity-types";
 import { verificationCode } from "../../core/crypto";
 import { badRequest } from "../../core/errors";
-import { emit, on } from "../../core/events";
+import { emitInTx, on } from "../../core/events";
 import { readFileBody, registerFileAccess, storeBuffer, type FileRow } from "../../core/files";
-import { enqueue } from "../../core/jobs";
+import { defineJob, enqueueJob } from "../../core/jobs";
 import { logger } from "../../core/logger";
 import { notify } from "../../core/notify";
 import { hasCapability } from "../../core/rbac";
 import { zId } from "../../core/schemas";
+import { publicBaseUrlOf } from "../../core/urls";
 import { renderCertificatePdf, type ImageInput } from "./pdf";
 import type { CertificateValues } from "./render";
 
@@ -34,7 +34,8 @@ export type TemplateRow = typeof certificateTemplates.$inferSelect;
 export type CertActivityRow = typeof certificateActivities.$inferSelect;
 export type IssuedRow = typeof issuedCertificates.$inferSelect;
 
-export const verifyUrlFor = (code: string) => `${config.APP_URL}/verify/${encodeURIComponent(code)}`;
+/** Public verification link (tenant subdomain / custom domain), also encoded in the QR code. */
+export const verifyUrlFor = (baseUrl: string, code: string) => `${baseUrl.replace(/\/+$/, "")}/verify/${encodeURIComponent(code)}`;
 
 // ─── Templates ──────────────────────────────────────────────────────────────
 
@@ -132,16 +133,17 @@ export async function renderTemplate(
   organizationId: string,
   t: { orientation: string; backgroundFileId?: string | null; elements: CertificateElement[] },
   values: CertificateValues,
-  opts: { previewUserId?: string; title?: string } = {},
+  opts: { previewUserId?: string; title?: string; baseUrl?: string } = {},
 ) {
   const images = await loadImages(tx, organizationId, templateFileIds(t), opts.previewUserId);
+  const baseUrl = opts.baseUrl ?? (await publicBaseUrlOf(tx, organizationId));
   return renderCertificatePdf({
     orientation: t.orientation,
     elements: t.elements,
     background: t.backgroundFileId ? (images.get(t.backgroundFileId) ?? null) : null,
     images,
     values,
-    verifyUrl: verifyUrlFor(values.code),
+    verifyUrl: verifyUrlFor(baseUrl, values.code),
     title: opts.title,
   });
 }
@@ -211,11 +213,14 @@ async function orgName(tx: DB, organizationId: string) {
 /**
  * Issues (or re-issues a revoked) certificate: snapshots the values, renders and
  * stores the PDF, and notifies the learner. Returns null when it already exists.
- * The caller emits `certificate.issued` after commit.
+ * Idempotent and safe under concurrency: the (activity, user) row is claimed with
+ * ON CONFLICT DO NOTHING before the PDF is rendered, so a concurrent issue (the
+ * auto-issue job and a learner's claim) yields exactly one certificate.
+ * The caller emits `certificate.issued` with `emitInTx` in the same transaction.
  */
 export async function issueCertificate(
   tx: DB,
-  input: { activity: ActivityRow; cert: CertActivityRow; userId: string; organizationName?: string; reinstate?: boolean },
+  input: { activity: ActivityRow; cert: CertActivityRow; userId: string; organizationName?: string; reinstate?: boolean; baseUrl?: string },
 ): Promise<IssuedRow | null> {
   const { activity, cert, userId } = input;
   const [existing] = await tx
@@ -244,8 +249,34 @@ export async function issueCertificate(
   };
   const expiresAt = cert.expiresAfterDays ? new Date(now.getTime() + cert.expiresAfterDays * 86_400_000) : null;
 
-  const id = existing?.id ?? crypto.randomUUID();
-  const pdf = await renderTemplate(tx, activity.organizationId, template, values, { title: `${activity.name} — ${values.fullname}` });
+  let id: string;
+  if (existing) {
+    id = existing.id;
+  } else {
+    const [claimed] = await tx
+      .insert(issuedCertificates)
+      .values({
+        organizationId: activity.organizationId,
+        certificateActivityId: cert.id,
+        userId,
+        courseId: activity.courseId,
+        code,
+        fileId: null,
+        snapshot: values,
+        issuedAt: now,
+        expiresAt,
+      })
+      .onConflictDoNothing({ target: [issuedCertificates.certificateActivityId, issuedCertificates.userId] })
+      .returning({ id: issuedCertificates.id });
+    // Someone else issued it concurrently.
+    if (!claimed) return null;
+    id = claimed.id;
+  }
+
+  const pdf = await renderTemplate(tx, activity.organizationId, template, values, {
+    title: `${activity.name} — ${values.fullname}`,
+    baseUrl: input.baseUrl,
+  });
   const file = await storeBuffer(tx, activity.organizationId, {
     component: "certificate",
     area: "issued",
@@ -257,31 +288,12 @@ export async function issueCertificate(
     body: pdf,
   });
 
-  let row: IssuedRow;
-  if (existing) {
-    if (existing.fileId) await tx.update(files).set({ deletedAt: now }).where(eq(files.id, existing.fileId));
-    [row] = (await tx
-      .update(issuedCertificates)
-      .set({ revokedAt: null, issuedAt: now, expiresAt, snapshot: values, fileId: file.id })
-      .where(eq(issuedCertificates.id, existing.id))
-      .returning()) as [IssuedRow];
-  } else {
-    [row] = (await tx
-      .insert(issuedCertificates)
-      .values({
-        id,
-        organizationId: activity.organizationId,
-        certificateActivityId: cert.id,
-        userId,
-        courseId: activity.courseId,
-        code,
-        fileId: file.id,
-        snapshot: values,
-        issuedAt: now,
-        expiresAt,
-      })
-      .returning()) as [IssuedRow];
-  }
+  if (existing?.fileId) await tx.update(files).set({ deletedAt: now }).where(eq(files.id, existing.fileId));
+  const [row] = (await tx
+    .update(issuedCertificates)
+    .set(existing ? { revokedAt: null, issuedAt: now, expiresAt, snapshot: values, fileId: file.id } : { fileId: file.id })
+    .where(eq(issuedCertificates.id, id))
+    .returning()) as [IssuedRow];
 
   await notify(tx, {
     organizationId: activity.organizationId,
@@ -300,30 +312,33 @@ export function certificateStatus(row: Pick<IssuedRow, "revokedAt" | "expiresAt"
   return "valid" as const;
 }
 
-/** Background job for `course.completed`: auto-issue every eligible certificate activity in the course. */
-async function autoIssueForCourse(organizationId: string, courseId: string, userId: string) {
-  const issued = await withTenant(organizationId, async (tx) => {
+type AutoIssuePayload = { organizationId: string; courseId: string; userId: string };
+
+/**
+ * Durable job for `course.completed`: auto-issues every eligible certificate
+ * activity of the course in one tenant transaction and emits `certificate.issued`
+ * through the outbox in that same transaction. Re-runs are no-ops (issueCertificate
+ * skips existing certificates).
+ */
+async function autoIssueForCourse({ organizationId, courseId, userId }: AutoIssuePayload) {
+  await withTenant(organizationId, async (tx) => {
     const rows = await tx
       .select({ activity: activities, cert: certificateActivities })
       .from(certificateActivities)
       .innerJoin(activities, eq(activities.id, certificateActivities.activityId))
       .where(and(eq(activities.courseId, courseId), eq(certificateActivities.autoIssue, true), eq(activities.visible, true)));
-    const out: { row: IssuedRow; activity: ActivityRow }[] = [];
-    if (!rows.length) return out;
+    if (!rows.length) return;
     const name = await orgName(tx, organizationId);
+    const baseUrl = await publicBaseUrlOf(tx, organizationId);
     for (const { activity, cert } of rows) {
       const now = new Date();
       if ((activity.availableFrom && activity.availableFrom > now) || (activity.availableUntil && activity.availableUntil < now)) continue;
       const elig = await checkEligibility(tx, cert, courseId, userId);
       if (!elig.eligible) continue;
-      const row = await issueCertificate(tx, { activity, cert, userId, organizationName: name });
-      if (row) out.push({ row, activity });
+      const row = await issueCertificate(tx, { activity, cert, userId, organizationName: name, baseUrl });
+      if (row) await emitInTx(tx, "certificate.issued", { organizationId, courseId, userId, activityId: activity.id, issuedCertificateId: row.id });
     }
-    return out;
   });
-  for (const { row, activity } of issued) {
-    await emit("certificate.issued", { organizationId, courseId, userId, activityId: activity.id, issuedCertificateId: row.id });
-  }
 }
 
 // ─── Activity type ──────────────────────────────────────────────────────────
@@ -387,8 +402,19 @@ export function setupCertificate() {
     return false;
   });
 
-  on("course.completed", async (_tx, p) => {
-    // Rendering PDFs is slow: do it in a job (own transaction), then emit after commit.
-    enqueue("certificate:auto-issue", () => autoIssueForCourse(p.organizationId, p.courseId, p.userId));
-  });
+  defineJob<AutoIssuePayload>("certificate.autoIssue", autoIssueForCourse);
+
+  on(
+    "course.completed",
+    async (tx, p) => {
+      // Rendering PDFs is slow: do it in a durable job (own transaction), enqueued atomically with this handler.
+      await enqueueJob(
+        tx,
+        "certificate.autoIssue",
+        { organizationId: p.organizationId, courseId: p.courseId, userId: p.userId } satisfies AutoIssuePayload,
+        { tenantId: p.organizationId, uniqueKey: `certificate.autoIssue:${p.courseId}:${p.userId}` },
+      );
+    },
+    { id: "certificate.autoIssueOnCourseCompleted" },
+  );
 }

@@ -7,21 +7,23 @@ import { toast } from "sonner";
 import { EmptyState, PageHeader, QueryState } from "@/components/common";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useActivity } from "@/features/activities/use-activity";
 import { api, errorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { selectClass } from "../assignment/form-utils";
 import { useCategories, useQuestions } from "../questionbank/api";
-import { TYPE_LABEL, round, useSlotMutation, useSlots, type Slot } from "./api";
+import { round, typeLabel, useSlotMutation, useSlots, type Slot } from "./api";
 
 export function QuizEditPage() {
   const activity = useActivity();
   const activityId = activity.activityId;
   const slots = useSlots(activityId);
   const [adding, setAdding] = useState(false);
+  const t = useT();
 
   const reorder = useSlotMutation(activityId, (slotIds: string[]) => api<Slot[]>(`/quizzes/${activityId}/slots/order`, { method: "PUT", body: { slotIds } }));
   const update = useSlotMutation(activityId, ({ id, ...body }: { id: string; maxMark?: number; pinnedVersion?: number | null }) =>
@@ -47,57 +49,72 @@ export function QuizEditPage() {
       {activity.data && (
         <div>
           <Link href={`/activities/${activityId}`} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-            <ChevronLeft className="size-4" /> {activity.data.name}
+            <ChevronLeft aria-hidden className="size-4" /> {activity.data.name}
           </Link>
           <PageHeader
             className="mt-2"
-            title="Edit quiz questions"
-            description={`${list.length} question${list.length === 1 ? "" : "s"} · total ${round(total)} marks`}
+            title={t("quiz.edit.title", "Edit quiz questions")}
+            description={
+              list.length === 1
+                ? t("quiz.edit.summary.one", "{count} question · total {marks} marks", { count: list.length, marks: round(total) })
+                : t("quiz.edit.summary.other", "{count} questions · total {marks} marks", { count: list.length, marks: round(total) })
+            }
             actions={
               <Button onClick={() => setAdding(true)} disabled={locked}>
-                <Plus /> Add from question bank
+                <Plus aria-hidden /> {t("quiz.edit.addFromBank", "Add from question bank")}
               </Button>
             }
           />
           {locked && (
             <Alert className="mb-4">
-              <Lock />
-              <AlertDescription>Students have attempted this quiz. You can reorder questions, but not add, remove or re-mark them.</AlertDescription>
+              <Lock aria-hidden />
+              <AlertDescription>
+                {t("quiz.edit.lockedNotice", "Students have attempted this quiz. You can reorder questions, but not add, remove or re-mark them.")}
+              </AlertDescription>
             </Alert>
           )}
           <QueryState query={slots}>
             {list.length === 0 ? (
-              <EmptyState title="No questions yet" description="Add questions from the course question bank." />
+              <EmptyState
+                title={t("quiz.edit.noQuestions", "No questions yet")}
+                description={t("quiz.edit.noQuestionsHint", "Add questions from the course question bank.")}
+              />
             ) : (
               <ol className="space-y-2">
                 {list.map((s, i) => (
                   <li key={s.id} className="flex flex-col gap-3 rounded-xl border p-3 sm:flex-row sm:items-center">
                     <div className="flex items-center gap-1">
-                      <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0 || reorder.isPending} onClick={() => move(i, -1)}>
-                        <ArrowUp />
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={t("quiz.edit.moveUp", "Move {name} up", { name: s.name })}
+                        disabled={i === 0 || reorder.isPending}
+                        onClick={() => move(i, -1)}
+                      >
+                        <ArrowUp aria-hidden />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        aria-label="Move down"
+                        aria-label={t("quiz.edit.moveDown", "Move {name} down", { name: s.name })}
                         disabled={i === list.length - 1 || reorder.isPending}
                         onClick={() => move(i, 1)}
                       >
-                        <ArrowDown />
+                        <ArrowDown aria-hidden />
                       </Button>
                       <span className="w-6 text-center text-sm font-medium">{i + 1}</span>
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-medium">{s.name}</div>
                       <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
-                        <Badge variant="outline">{TYPE_LABEL[s.type]}</Badge>
-                        {s.deleted && <Badge variant="destructive">Deleted from bank</Badge>}
+                        <Badge variant="outline">{typeLabel(t, s.type)}</Badge>
+                        {s.deleted && <Badge variant="destructive">{t("quiz.edit.deletedFromBank", "Deleted from bank")}</Badge>}
                       </div>
                     </div>
                     <div className="flex flex-wrap items-end gap-2">
                       <div className="w-24 space-y-1">
                         <Label htmlFor={`mark-${s.id}`} className="text-xs">
-                          Mark
+                          {t("quiz.edit.mark", "Mark")}
                         </Label>
                         <MarkInput
                           key={`${s.id}-${s.maxMark}`}
@@ -109,7 +126,7 @@ export function QuizEditPage() {
                       </div>
                       <div className="w-32 space-y-1">
                         <Label htmlFor={`ver-${s.id}`} className="text-xs">
-                          Version
+                          {t("quiz.edit.version", "Version")}
                         </Label>
                         <select
                           id={`ver-${s.id}`}
@@ -118,10 +135,10 @@ export function QuizEditPage() {
                           value={s.pinnedVersion ?? ""}
                           onChange={(e) => update.mutate({ id: s.id, pinnedVersion: e.target.value ? Number(e.target.value) : null }, { onError })}
                         >
-                          <option value="">Always latest (v{s.latestVersion})</option>
+                          <option value="">{t("quiz.edit.alwaysLatest", "Always latest (v{version})", { version: s.latestVersion })}</option>
                           {Array.from({ length: s.latestVersion }, (_, k) => s.latestVersion - k).map((n) => (
                             <option key={n} value={n}>
-                              Pin v{n}
+                              {t("quiz.edit.pinVersion", "Pin v{version}", { version: n })}
                             </option>
                           ))}
                         </select>
@@ -129,11 +146,11 @@ export function QuizEditPage() {
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        aria-label={`Remove ${s.name}`}
+                        aria-label={t("quiz.edit.remove", "Remove {name}", { name: s.name })}
                         disabled={locked || remove.isPending}
                         onClick={() => remove.mutate(s.id, { onError })}
                       >
-                        <Trash2 />
+                        <Trash2 aria-hidden />
                       </Button>
                     </div>
                   </li>
@@ -179,6 +196,7 @@ function AddQuestionsDialog({ activityId, courseId, onClose }: { activityId: str
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const qs = useQuestions(categoryId, courseId, { page, search: search || undefined });
   const add = useSlotMutation(activityId, (questionIds: string[]) => api<Slot[]>(`/quizzes/${activityId}/slots`, { body: { questionIds } }));
+  const t = useT();
 
   const toggle = (id: string) =>
     setPicked((prev) => {
@@ -192,23 +210,23 @@ function AddQuestionsDialog({ activityId, courseId, onClose }: { activityId: str
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add questions</DialogTitle>
+          <DialogTitle>{t("quiz.edit.addQuestions", "Add questions")}</DialogTitle>
         </DialogHeader>
         <QueryState query={cats}>
           {cats.data && cats.data.length === 0 ? (
             <EmptyState
-              title="The question bank is empty"
+              title={t("quiz.edit.bankEmpty", "The question bank is empty")}
               action={
-                <Button variant="outline" render={<Link href={`/courses/${courseId}/question-bank`} />}>
-                  Open question bank
-                </Button>
+                <Link href={`/courses/${courseId}/question-bank`} className={buttonVariants({ variant: "outline" })}>
+                  {t("quiz.edit.openBank", "Open question bank")}
+                </Link>
               }
             />
           ) : (
             <div className="space-y-3">
               <div className="grid gap-2 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <Label htmlFor="add-cat">Category</Label>
+                  <Label htmlFor="add-cat">{t("quiz.edit.category", "Category")}</Label>
                   <select
                     id="add-cat"
                     className={selectClass}
@@ -220,15 +238,18 @@ function AddQuestionsDialog({ activityId, courseId, onClose }: { activityId: str
                   >
                     {cats.data?.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.name} ({c.questionCount}){c.courseId ? "" : " · shared"}
+                        {c.courseId
+                          ? t("quiz.edit.categoryOption", "{name} ({count})", { name: c.name, count: c.questionCount })
+                          : t("quiz.edit.categoryOptionShared", "{name} ({count}) · shared", { name: c.name, count: c.questionCount })}
                       </option>
                     ))}
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <Label htmlFor="add-search">Search</Label>
+                  <Label htmlFor="add-search">{t("common.search", "Search")}</Label>
                   <Input
                     id="add-search"
+                    type="search"
                     value={search}
                     onChange={(e) => {
                       setSearch(e.target.value);
@@ -241,15 +262,19 @@ function AddQuestionsDialog({ activityId, courseId, onClose }: { activityId: str
                 {qs.data && (
                   <div className="max-h-[50vh] overflow-y-auto rounded-lg border">
                     {qs.data.items.length === 0 ? (
-                      <p className="p-4 text-sm text-muted-foreground">No questions found.</p>
+                      (
+                      <p className="p-4 text-sm text-muted-foreground" role="status">
+                        {t("quiz.edit.noneFound", "No questions found.")}
+                      </p>
+                    )
                     ) : (
-                      <ul className="divide-y">
+                      <ul className="divide-y" aria-label={t("quiz.edit.questionList", "Questions")}>
                         {qs.data.items.map((q) => (
                           <li key={q.id}>
                             <label className="flex cursor-pointer items-center gap-3 p-2.5 text-sm hover:bg-muted/40">
-                              <input type="checkbox" className="accent-primary" checked={picked.has(q.id)} onChange={() => toggle(q.id)} />
+                              <input type="checkbox" className="accent-primary focus-visible:ring-2 focus-visible:ring-ring" checked={picked.has(q.id)} onChange={() => toggle(q.id)} />
                               <span className="min-w-0 flex-1 truncate">{q.name}</span>
-                              <Badge variant="outline">{TYPE_LABEL[q.type]}</Badge>
+                              <Badge variant="outline">{typeLabel(t, q.type)}</Badge>
                             </label>
                           </li>
                         ))}
@@ -259,38 +284,42 @@ function AddQuestionsDialog({ activityId, courseId, onClose }: { activityId: str
                 )}
               </QueryState>
               {qs.data && qs.data.total > qs.data.pageSize && (
-                <div className="flex items-center justify-between text-sm">
+                <nav className="flex items-center justify-between text-sm" aria-label={t("quiz.edit.pagination", "Question bank pages")}>
                   <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>
-                    Previous
+                    {t("common.previous", "Previous")}
                   </Button>
                   <span className="text-muted-foreground">
-                    Page {page} of {Math.ceil(qs.data.total / qs.data.pageSize)}
+                    {t("quiz.pageOf", "Page {page} of {pages}", { page, pages: Math.ceil(qs.data.total / qs.data.pageSize) })}
                   </span>
                   <Button variant="outline" size="sm" disabled={page * qs.data.pageSize >= qs.data.total} onClick={() => setPage(page + 1)}>
-                    Next
+                    {t("common.next", "Next")}
                   </Button>
-                </div>
+                </nav>
               )}
             </div>
           )}
         </QueryState>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            {t("common.cancel", "Cancel")}
           </Button>
           <Button
             disabled={!picked.size || add.isPending}
             onClick={() =>
               add.mutate([...picked], {
                 onSuccess: () => {
-                  toast.success(`${picked.size} question${picked.size > 1 ? "s" : ""} added`);
+                  toast.success(
+                    picked.size === 1
+                      ? t("quiz.edit.added.one", "{count} question added", { count: picked.size })
+                      : t("quiz.edit.added.other", "{count} questions added", { count: picked.size }),
+                  );
                   onClose();
                 },
                 onError: (err) => toast.error(errorMessage(err)),
               })
             }
           >
-            Add {picked.size || ""} selected
+            {picked.size ? t("quiz.edit.addSelectedCount", "Add {count} selected", { count: picked.size }) : t("quiz.edit.addSelected", "Add selected")}
           </Button>
         </DialogFooter>
       </DialogContent>

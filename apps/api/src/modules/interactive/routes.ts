@@ -118,7 +118,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           rawScore: z.number().min(0).max(1_000_000).nullable().optional(),
           maxScore: z.number().positive().max(1_000_000).nullable().optional(),
           completed: z.boolean().default(false),
-          statement: z.record(z.unknown()).optional(),
+          statement: z.record(z.string(), z.unknown()).optional(),
         }),
         response: { 201: z.object({ id: zId, bestPercent: z.number().nullable() }) },
       },

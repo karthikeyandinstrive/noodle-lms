@@ -5,3 +5,7 @@ export * from "./community";
 export * from "./gradebook";
 export * from "./engagement";
 export * from "./commerce";
+export * from "./platform";
+export * from "./identity";
+export * from "./interop";
+export * from "./messaging";

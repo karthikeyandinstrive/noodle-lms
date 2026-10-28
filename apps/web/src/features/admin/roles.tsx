@@ -12,15 +12,27 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorAlert, PageHeader, QueryState } from "@/components/common";
 import { api, errorMessage } from "@/lib/api";
+import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog, Field, NativeSelect, RequireCapability } from "./shared";
 import type { CapabilityDef, Permission, Role } from "./types";
 
 const rolesKey = ["roles"] as const;
 const LEVELS = ["system", "category", "course", "activity"] as const;
+const levelLabel = (level: string, t: Translate) =>
+  level === "system"
+    ? t("admin.roles.level.system", "System")
+    : level === "category"
+      ? t("admin.roles.level.category", "Category")
+      : level === "course"
+        ? t("admin.roles.level.course", "Course")
+        : level === "activity"
+          ? t("admin.roles.level.activity", "Activity")
+          : level;
 type Draft = Record<string, Permission | null>;
 
 function CreateRoleDialog({ roles, open, onOpenChange, onCreated }: { roles: Role[]; open: boolean; onOpenChange: (o: boolean) => void; onCreated: (r: Role) => void }) {
+  const t = useT();
   const qc = useQueryClient();
   const copyable = roles.filter((r) => r.archetype !== "super_admin");
   const [v, setV] = useState({ shortname: "", name: "", description: "", copyFromRoleId: copyable[0]?.id ?? "", levels: ["course"] as string[] });
@@ -31,7 +43,7 @@ function CreateRoleDialog({ roles, open, onOpenChange, onCreated }: { roles: Rol
         body: { shortname: v.shortname, name: v.name, description: v.description || null, copyFromRoleId: v.copyFromRoleId, assignableLevels: v.levels },
       }),
     onSuccess: (r) => {
-      toast.success(`${r.name} created`);
+      toast.success(t("admin.shared.created", "{name} created", { name: r.name }));
       void qc.invalidateQueries({ queryKey: rolesKey });
       onCreated(r);
       onOpenChange(false);
@@ -42,29 +54,29 @@ function CreateRoleDialog({ roles, open, onOpenChange, onCreated }: { roles: Rol
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>New custom role</DialogTitle>
-          <DialogDescription>The role starts with a copy of another role&apos;s permissions.</DialogDescription>
+          <DialogTitle>{t("admin.roles.newCustomRole", "New custom role")}</DialogTitle>
+          <DialogDescription>{t("admin.roles.newCustomRoleHelp", "The role starts with a copy of another role's permissions.")}</DialogDescription>
         </DialogHeader>
         <form
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
             setError(null);
-            if (!v.levels.length) setError(new Error("Choose at least one level"));
+            if (!v.levels.length) setError(new Error(t("admin.roles.chooseLevel", "Choose at least one level")));
             else create.mutate();
           }}
         >
           {error ? <ErrorAlert error={error} /> : null}
-          <Field id="r-name" label="Name">
+          <Field id="r-name" label={t("common.name", "Name")}>
             <Input id="r-name" required maxLength={100} value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} />
           </Field>
-          <Field id="r-short" label="Short name" hint="Lowercase letters, numbers and underscores.">
+          <Field id="r-short" label={t("admin.roles.shortname", "Short name")} hint={t("admin.roles.shortnameHint", "Lowercase letters, numbers and underscores.")}>
             <Input id="r-short" required pattern="[a-z0-9_]{2,50}" value={v.shortname} onChange={(e) => setV({ ...v, shortname: e.target.value.toLowerCase() })} />
           </Field>
-          <Field id="r-desc" label="Description">
+          <Field id="r-desc" label={t("common.description", "Description")}>
             <Textarea id="r-desc" rows={2} maxLength={1000} value={v.description} onChange={(e) => setV({ ...v, description: e.target.value })} />
           </Field>
-          <Field id="r-copy" label="Copy permissions from">
+          <Field id="r-copy" label={t("admin.roles.copyFrom", "Copy permissions from")}>
             <NativeSelect id="r-copy" required value={v.copyFromRoleId} onChange={(e) => setV({ ...v, copyFromRoleId: e.target.value })}>
               {copyable.map((r) => (
                 <option key={r.id} value={r.id}>
@@ -74,26 +86,26 @@ function CreateRoleDialog({ roles, open, onOpenChange, onCreated }: { roles: Rol
             </NativeSelect>
           </Field>
           <fieldset>
-            <legend className="mb-1.5 text-sm font-medium">Can be assigned at</legend>
+            <legend className="mb-1.5 text-sm font-medium">{t("admin.roles.assignableAt", "Can be assigned at")}</legend>
             <div className="flex flex-wrap gap-4">
               {LEVELS.map((l) => (
-                <label key={l} className="flex items-center gap-1.5 text-sm capitalize">
+                <label key={l} className="flex items-center gap-1.5 text-sm">
                   <input
                     type="checkbox"
                     checked={v.levels.includes(l)}
                     onChange={(e) => setV({ ...v, levels: e.target.checked ? [...v.levels, l] : v.levels.filter((x) => x !== l) })}
                   />
-                  {l}
+                  {levelLabel(l, t)}
                 </label>
               ))}
             </div>
           </fieldset>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
+              {t("common.cancel", "Cancel")}
             </Button>
             <Button type="submit" disabled={create.isPending}>
-              {create.isPending ? "Creating…" : "Create role"}
+              {create.isPending ? t("admin.shared.creating", "Creating…") : t("admin.roles.createRole", "Create role")}
             </Button>
           </DialogFooter>
         </form>
@@ -109,6 +121,7 @@ const PERMISSION_STYLE: Record<Permission, string> = {
 };
 
 function CapabilityMatrix({ role, capabilities }: { role: Role; capabilities: CapabilityDef[] }) {
+  const t = useT();
   const qc = useQueryClient();
   const [draft, setDraft] = useState<Draft>({});
   const [filter, setFilter] = useState("");
@@ -132,7 +145,7 @@ function CapabilityMatrix({ role, capabilities }: { role: Role; capabilities: Ca
   const save = useMutation({
     mutationFn: () => api<Role>(`/roles/${role.id}`, { method: "PATCH", body: { capabilities: Object.fromEntries(changes) } }),
     onSuccess: () => {
-      toast.success(`${role.name} permissions saved`);
+      toast.success(t("admin.roles.permissionsSaved", "{name} permissions saved", { name: role.name }));
       setDraft({});
       void qc.invalidateQueries({ queryKey: rolesKey });
     },
@@ -142,14 +155,21 @@ function CapabilityMatrix({ role, capabilities }: { role: Role; capabilities: Ca
 
   return (
     <div className="space-y-4">
-      {readOnly && <p className="text-sm text-muted-foreground">The super admin role always has every capability and cannot be edited.</p>}
+      {readOnly && <p className="text-sm text-muted-foreground">{t("admin.roles.superAdminReadOnly", "The super admin role always has every capability and cannot be edited.")}</p>}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative flex-1">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input className="pl-8" type="search" placeholder="Filter capabilities" aria-label="Filter capabilities" value={filter} onChange={(e) => setFilter(e.target.value)} />
+          <Search aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="pl-8"
+            type="search"
+            placeholder={t("admin.roles.filterCapabilities", "Filter capabilities")}
+            aria-label={t("admin.roles.filterCapabilities", "Filter capabilities")}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
         </div>
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={onlySet} onChange={(e) => setOnlySet(e.target.checked)} /> Only set permissions
+          <input type="checkbox" checked={onlySet} onChange={(e) => setOnlySet(e.target.checked)} /> {t("admin.roles.onlySet", "Only set permissions")}
         </label>
       </div>
       {grouped.map(([prefix, caps]) => (
@@ -168,24 +188,25 @@ function CapabilityMatrix({ role, capabilities }: { role: Role; capabilities: Ca
                       <code className="text-xs">{c.name}</code>
                       {c.risky && (
                         <Badge variant="destructive" className="gap-1">
-                          <AlertTriangle className="size-3" /> Risky
+                          <AlertTriangle aria-hidden className="size-3" /> {t("admin.roles.risky", "Risky")}
                         </Badge>
                       )}
-                      <Badge variant="outline">{c.level}</Badge>
+                      <Badge variant="outline">{levelLabel(c.level, t)}</Badge>
+                      {changed && <span className="sr-only">{t("admin.roles.unsavedChange", "(unsaved change)")}</span>}
                     </div>
                     <p className="text-xs text-muted-foreground">{c.description}</p>
                   </div>
                   <NativeSelect
-                    aria-label={`Permission for ${c.name}`}
+                    aria-label={t("admin.roles.permissionFor", "{role} permission for {capability}", { role: role.name, capability: c.name })}
                     disabled={readOnly}
                     className={cn("sm:w-36", value && PERMISSION_STYLE[value])}
                     value={value ?? ""}
                     onChange={(e) => setDraft({ ...draft, [c.name]: (e.target.value || null) as Permission | null })}
                   >
-                    <option value="">Not set</option>
-                    <option value="allow">Allow</option>
-                    <option value="prevent">Prevent</option>
-                    <option value="prohibit">Prohibit</option>
+                    <option value="">{t("admin.roles.perm.notSet", "Not set")}</option>
+                    <option value="allow">{t("admin.roles.perm.allow", "Allow")}</option>
+                    <option value="prevent">{t("admin.roles.perm.prevent", "Prevent")}</option>
+                    <option value="prohibit">{t("admin.roles.perm.prohibit", "Prohibit")}</option>
                   </NativeSelect>
                 </li>
               );
@@ -193,19 +214,33 @@ function CapabilityMatrix({ role, capabilities }: { role: Role; capabilities: Ca
           </ul>
         </section>
       ))}
-      {grouped.length === 0 && <p className="text-sm text-muted-foreground">No capabilities match.</p>}
+      {grouped.length === 0 && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {t("admin.roles.noMatches", "No capabilities match.")}
+        </p>
+      )}
       {!readOnly && (
         <div className="sticky bottom-0 flex flex-col gap-2 border-t bg-background/95 py-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground" aria-live="polite">
-            {changes.length ? `${changes.length} unsaved change${changes.length === 1 ? "" : "s"}` : "No changes"}
-            {riskyAllowed.length > 0 && <span className="ml-1 text-destructive">· allows {riskyAllowed.length} risky capabilit{riskyAllowed.length === 1 ? "y" : "ies"}</span>}
+            {changes.length === 0
+              ? t("admin.roles.noChanges", "No changes")
+              : changes.length === 1
+                ? t("admin.roles.unsaved.one", "1 unsaved change")
+                : t("admin.roles.unsaved.other", "{count} unsaved changes", { count: changes.length })}
+            {riskyAllowed.length > 0 && (
+              <span className="ml-1 text-destructive">
+                {riskyAllowed.length === 1
+                  ? t("admin.roles.allowsRisky.one", "· allows 1 risky capability")
+                  : t("admin.roles.allowsRisky.other", "· allows {count} risky capabilities", { count: riskyAllowed.length })}
+              </span>
+            )}
           </p>
           <div className="flex gap-2">
             <Button variant="outline" disabled={!changes.length} onClick={() => setDraft({})}>
-              Discard
+              {t("admin.roles.discard", "Discard")}
             </Button>
             <Button disabled={!changes.length || save.isPending} onClick={() => save.mutate()}>
-              {save.isPending ? "Saving…" : "Save permissions"}
+              {save.isPending ? t("common.saving", "Saving…") : t("admin.roles.savePermissions", "Save permissions")}
             </Button>
           </div>
         </div>
@@ -215,6 +250,7 @@ function CapabilityMatrix({ role, capabilities }: { role: Role; capabilities: Ca
 }
 
 export function RolesAdmin() {
+  const t = useT();
   const qc = useQueryClient();
   const roles = useQuery({ queryKey: rolesKey, queryFn: () => api<Role[]>("/roles") });
   const capabilities = useQuery({ queryKey: ["capabilities"], queryFn: () => api<CapabilityDef[]>("/capabilities"), staleTime: Infinity });
@@ -226,7 +262,7 @@ export function RolesAdmin() {
   const remove = useMutation({
     mutationFn: (id: string) => api(`/roles/${id}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Role deleted");
+      toast.success(t("admin.roles.deleted", "Role deleted"));
       setDeleting(null);
       setSelectedId(null);
       void qc.invalidateQueries({ queryKey: rolesKey });
@@ -237,20 +273,20 @@ export function RolesAdmin() {
   return (
     <RequireCapability capability="role:manage">
       <PageHeader
-        title="Roles & permissions"
-        description="Default permissions of each role across the organization. Course-level overrides are set per course."
+        title={t("admin.roles.title", "Roles & permissions")}
+        description={t("admin.roles.description", "Default permissions of each role across the organization. Course-level overrides are set per course.")}
         actions={
           <Button onClick={() => setCreating(true)} disabled={!roles.data}>
-            <Plus /> New role
+            <Plus aria-hidden /> {t("admin.roles.newRole", "New role")}
           </Button>
         }
       />
       <QueryState query={roles}>
         {roles.data && selected && (
           <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">
-            <nav aria-label="Roles">
+            <nav aria-label={t("admin.roles.roles", "Roles")}>
               <label className="mb-2 block lg:hidden">
-                <span className="sr-only">Role</span>
+                <span className="sr-only">{t("admin.roles.role", "Role")}</span>
                 <NativeSelect value={selected.id} onChange={(e) => setSelectedId(e.target.value)}>
                   {roles.data.map((r) => (
                     <option key={r.id} value={r.id}>
@@ -266,7 +302,7 @@ export function RolesAdmin() {
                       type="button"
                       onClick={() => setSelectedId(r.id)}
                       aria-current={r.id === selected.id ? "true" : undefined}
-                      className={cn("w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-muted", r.id === selected.id && "bg-muted font-medium")}
+                      className={cn("w-full rounded-lg px-3 py-2 text-left text-sm outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring", r.id === selected.id && "bg-muted font-medium")}
                     >
                       {r.name}
                       <span className="block text-xs text-muted-foreground">{r.shortname}</span>
@@ -280,13 +316,14 @@ export function RolesAdmin() {
                 <div className="min-w-0">
                   <CardTitle>{selected.name}</CardTitle>
                   <CardDescription>
-                    Archetype <code>{selected.archetype}</code> · assignable at {selected.assignableLevels.join(", ") || "—"}
+                    {t("admin.roles.archetype", "Archetype")} <code>{selected.archetype}</code> ·{" "}
+                    {t("admin.roles.assignableAtList", "assignable at {levels}", { levels: selected.assignableLevels.map((l) => levelLabel(l, t)).join(", ") || "—" })}
                     {selected.description && <span className="block">{selected.description}</span>}
                   </CardDescription>
                 </div>
                 {selected.shortname !== selected.archetype && (
-                  <Button variant="ghost" size="icon-sm" aria-label={`Delete ${selected.name}`} onClick={() => setDeleting(selected)}>
-                    <Trash2 />
+                  <Button variant="ghost" size="icon-sm" aria-label={t("admin.shared.deleteName", "Delete {name}", { name: selected.name })} onClick={() => setDeleting(selected)}>
+                    <Trash2 aria-hidden />
                   </Button>
                 )}
               </CardHeader>
@@ -301,9 +338,9 @@ export function RolesAdmin() {
       <ConfirmDialog
         open={!!deleting}
         onOpenChange={(o) => !o && setDeleting(null)}
-        title={`Delete ${deleting?.name}?`}
-        description="Everyone holding this role loses it in every context."
-        confirmLabel="Delete role"
+        title={t("admin.shared.deleteTitle", "Delete {name}?", { name: deleting?.name ?? "" })}
+        description={t("admin.roles.deleteDescription", "Everyone holding this role loses it in every context.")}
+        confirmLabel={t("admin.roles.deleteRole", "Delete role")}
         destructive
         confirmText={deleting?.shortname}
         pending={remove.isPending}

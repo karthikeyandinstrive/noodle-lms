@@ -19,7 +19,7 @@ const zRole = z.object({
   description: z.string().nullable(),
   archetype: z.string(),
   assignableLevels: z.array(z.string()),
-  capabilities: z.record(zPermission),
+  capabilities: z.record(z.string(), zPermission),
 });
 
 async function requireRoleManage(tx: DB, req: Parameters<typeof requireCapability>[1] & { org: { id: string } }) {
@@ -65,7 +65,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["Roles"],
         summary: "Evaluate capabilities for the current user in a context",
         querystring: z.object({ contextId: zId, capabilities: z.string().describe("comma separated") }),
-        response: { 200: z.record(z.boolean()) },
+        response: { 200: z.record(z.string(), z.boolean()) },
       },
     },
     (req) =>

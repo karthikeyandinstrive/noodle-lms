@@ -114,6 +114,16 @@ describe("RBAC", () => {
   });
 });
 
+describe("partial updates", () => {
+  it("PATCH only changes the fields it sends (no defaults re-applied)", async () => {
+    const created = await admin.req("POST", "/courses", { fullname: "Patch me", shortname: "PATCH1", selfEnrol: "open", visible: false });
+    expect(created.status).toBe(201);
+    const patched = await admin.req("PATCH", `/courses/${created.body.id}`, { fullname: "Patched" });
+    expect(patched.status).toBe(200);
+    expect(patched.body).toMatchObject({ fullname: "Patched", selfEnrol: "open", visible: false });
+  });
+});
+
 describe("tenant isolation", () => {
   it("a session from one organization is not valid on another", async () => {
     const other = new Client(env.app, "acme.localhost");

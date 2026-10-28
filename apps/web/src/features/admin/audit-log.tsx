@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, PageHeader, QueryState, formatDate, fullName } from "@/components/common";
+import { EmptyState, PageHeader, QueryState, fullName } from "@/components/common";
 import { api, type Paged } from "@/lib/api";
+import { useFormat, useT } from "@/lib/i18n";
 import { Field, Pager, RequireCapability, useDebounced } from "./shared";
 import type { AuditEntry } from "./types";
 
@@ -22,6 +23,9 @@ function JsonView({ value }: { value: unknown }) {
 }
 
 export function AuditLogAdmin() {
+  const t = useT();
+  const fmt = useFormat();
+  const system = t("admin.audit.system", "System");
   const [action, setAction] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -50,47 +54,47 @@ export function AuditLogAdmin() {
 
   return (
     <RequireCapability capability="site:view_audit_log">
-      <PageHeader title="Audit log" description="Administrative and security-relevant changes, newest first." />
+      <PageHeader title={t("admin.audit.title", "Audit log")} description={t("admin.audit.description", "Administrative and security-relevant changes, newest first.")} />
       <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_auto_auto]">
-        <Field id="al-action" label="Action" hint="Exact name, e.g. user.updated or payment.refunded">
-          <Input id="al-action" value={action} onChange={(e) => reset(() => setAction(e.target.value))} placeholder="Any action" />
+        <Field id="al-action" label={t("admin.audit.action", "Action")} hint={t("admin.audit.actionHint", "Exact name, e.g. user.updated or payment.refunded")}>
+          <Input id="al-action" value={action} onChange={(e) => reset(() => setAction(e.target.value))} placeholder={t("admin.audit.anyAction", "Any action")} />
         </Field>
-        <Field id="al-from" label="From">
+        <Field id="al-from" label={t("admin.audit.from", "From")}>
           <Input id="al-from" type="date" value={from} onChange={(e) => reset(() => setFrom(e.target.value))} />
         </Field>
-        <Field id="al-to" label="To">
+        <Field id="al-to" label={t("admin.audit.to", "To")}>
           <Input id="al-to" type="date" value={to} onChange={(e) => reset(() => setTo(e.target.value))} />
         </Field>
       </div>
       <QueryState query={logs}>
         {logs.data && logs.data.items.length === 0 ? (
-          <EmptyState title="No entries" description="Nothing matches these filters." />
+          <EmptyState title={t("admin.audit.empty", "No entries")} description={t("admin.audit.emptyHelp", "Nothing matches these filters.")} />
         ) : (
           logs.data && (
             <>
               <div className="overflow-x-auto rounded-xl border">
-                <Table>
+                <Table aria-label={t("admin.audit.title", "Audit log")}>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>When</TableHead>
-                      <TableHead>Action</TableHead>
-                      <TableHead className="hidden md:table-cell">Actor</TableHead>
-                      <TableHead className="hidden lg:table-cell">Target</TableHead>
-                      <TableHead className="hidden lg:table-cell">IP</TableHead>
+                      <TableHead>{t("admin.audit.when", "When")}</TableHead>
+                      <TableHead>{t("admin.audit.action", "Action")}</TableHead>
+                      <TableHead className="hidden md:table-cell">{t("admin.audit.actor", "Actor")}</TableHead>
+                      <TableHead className="hidden lg:table-cell">{t("admin.audit.target", "Target")}</TableHead>
+                      <TableHead className="hidden lg:table-cell">{t("admin.audit.ip", "IP")}</TableHead>
                       <TableHead>
-                        <span className="sr-only">Details</span>
+                        <span className="sr-only">{t("admin.audit.details", "Details")}</span>
                       </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {logs.data.items.map((e) => (
                       <TableRow key={e.id}>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(e.createdAt)}</TableCell>
+                        <TableCell className="whitespace-nowrap text-muted-foreground">{fmt.date(e.createdAt)}</TableCell>
                         <TableCell>
                           <code className="text-xs">{e.action}</code>
-                          <div className="text-xs text-muted-foreground md:hidden">{e.actor ? fullName(e.actor) : "System"}</div>
+                          <div className="text-xs text-muted-foreground md:hidden">{e.actor ? fullName(e.actor) : system}</div>
                         </TableCell>
-                        <TableCell className="hidden md:table-cell">{e.actor ? fullName(e.actor) : <span className="text-muted-foreground">System</span>}</TableCell>
+                        <TableCell className="hidden md:table-cell">{e.actor ? fullName(e.actor) : <span className="text-muted-foreground">{system}</span>}</TableCell>
                         <TableCell className="hidden max-w-56 truncate text-xs lg:table-cell">
                           {e.targetType ? (
                             <>
@@ -102,8 +106,8 @@ export function AuditLogAdmin() {
                         </TableCell>
                         <TableCell className="hidden font-mono text-xs lg:table-cell">{e.ip ?? "—"}</TableCell>
                         <TableCell className="text-right">
-                          <Button variant="ghost" size="icon-sm" aria-label={`View details of ${e.action}`} onClick={() => setViewing(e)}>
-                            <Braces />
+                          <Button variant="ghost" size="icon-sm" aria-label={t("admin.audit.viewDetails", "View details of {action}", { action: e.action })} onClick={() => setViewing(e)}>
+                            <Braces aria-hidden />
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -123,7 +127,7 @@ export function AuditLogAdmin() {
               <DialogHeader>
                 <DialogTitle className="font-mono text-base">{viewing.action}</DialogTitle>
                 <DialogDescription>
-                  {formatDate(viewing.createdAt)} · {viewing.actor ? fullName(viewing.actor) : "System"}
+                  {fmt.date(viewing.createdAt)} · {viewing.actor ? fullName(viewing.actor) : system}
                   {viewing.ip && <> · {viewing.ip}</>}
                 </DialogDescription>
               </DialogHeader>

@@ -5,13 +5,14 @@ import { Download, EyeOff, History, Lock, Search, Settings2 } from "lucide-react
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { EmptyState, QueryState, formatDate, fullName } from "@/components/common";
+import { EmptyState, QueryState, fullName } from "@/components/common";
+import { RichTextEditor } from "@/components/rich-text-editor";
 import { api, errorMessage } from "@/lib/api";
+import { useFormat, useLocale, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { fmtGrade, gradesKey, type Grade, type GradeHistoryEntry, type GradeItem, type GraderReport, type GradebookUser } from "./types";
 
@@ -47,13 +48,15 @@ function parseGrade(text: string, item: GradeItem): number | null | undefined {
 
 /** One grade cell: a button showing the grade; editing happens inline (Enter saves, Escape cancels). */
 function GradeCell({ cell, canEdit, courseId, onDetails }: { cell: Cell; canEdit: boolean; courseId: string; onDetails: (c: Cell) => void }) {
+  const t = useT();
+  const locale = useLocale();
   const { item, user, grade } = cell;
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const save = useSaveGrade(courseId);
   const value = grade?.finalGrade ?? null;
-  const label = `${item.name} for ${fullName(user)}`;
+  const label = t("grades.cellLabel", "{item} for {student}", { item: item.name, student: fullName(user) });
   const editable = canEdit && !item.locked;
 
   useEffect(() => {
@@ -63,7 +66,7 @@ function GradeCell({ cell, canEdit, courseId, onDetails }: { cell: Cell; canEdit
   const commit = () => {
     const parsed = parseGrade(text, item);
     if (parsed === undefined) {
-      toast.error(`Enter a grade between ${fmtGrade(item.gradeMin)} and ${fmtGrade(item.gradeMax)}`);
+      toast.error(t("grades.rangeError", "Enter a grade between {min} and {max}", { min: fmtGrade(item.gradeMin, locale), max: fmtGrade(item.gradeMax, locale) }));
       return;
     }
     setEditing(false);
@@ -78,7 +81,7 @@ function GradeCell({ cell, canEdit, courseId, onDetails }: { cell: Cell; canEdit
           ref={inputRef}
           inputMode="decimal"
           className="h-7 w-20 text-right"
-          aria-label={`Grade: ${label} (max ${fmtGrade(item.gradeMax)})`}
+          aria-label={t("grades.gradeInput", "Grade: {label} (max {max})", { label, max: fmtGrade(item.gradeMax, locale) })}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -99,14 +102,14 @@ function GradeCell({ cell, canEdit, courseId, onDetails }: { cell: Cell; canEdit
         <Button
           variant="ghost"
           size="icon-xs"
-          aria-label={`Feedback and history: ${label}`}
+          aria-label={t("grades.feedbackHistory", "Feedback and history: {label}", { label })}
           data-cell-details={`${item.id}:${user.id}`}
           onClick={() => {
             setEditing(false);
             onDetails(cell);
           }}
         >
-          <History />
+          <History aria-hidden />
         </Button>
       </div>
     );
@@ -114,13 +117,16 @@ function GradeCell({ cell, canEdit, courseId, onDetails }: { cell: Cell; canEdit
 
   const content = (
     <span className={cn("tabular-nums", grade?.overridden && "font-semibold text-amber-700 dark:text-amber-400")}>
-      {fmtGrade(value)}
-      {grade?.overridden && <span className="sr-only"> (overridden)</span>}
+      {fmtGrade(value, locale)}
+      {grade?.overridden && <span className="sr-only"> ({t("grades.overridden", "overridden")})</span>}
     </span>
   );
   if (!editable) {
     return (
-      <button type="button" className="w-full rounded px-1 text-right hover:bg-muted" aria-label={`${label}: ${fmtGrade(value)}. Show history`} onClick={() => onDetails(cell)}>
+      <button
+        type="button"
+        className="w-full rounded px-1 text-right hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        aria-label={t("grades.showHistoryLabel", "{label}: {grade}. Show history", { label, grade: fmtGrade(value, locale) })} onClick={() => onDetails(cell)}>
         {content}
       </button>
     );
@@ -128,9 +134,9 @@ function GradeCell({ cell, canEdit, courseId, onDetails }: { cell: Cell; canEdit
   return (
     <button
       type="button"
-      className="w-full rounded px-1 text-right hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-      title={grade?.overridden ? "Overridden by a teacher" : "Click to edit"}
-      aria-label={`Edit ${label}: ${fmtGrade(value)}`}
+      className="w-full rounded px-1 text-right hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      title={grade?.overridden ? t("grades.overriddenTitle", "Overridden by a teacher") : t("grades.clickToEdit", "Click to edit")}
+      aria-label={t("grades.editCell", "Edit {label}: {grade}", { label, grade: fmtGrade(value, locale) })}
       onClick={() => {
         setText(value === null ? "" : String(value));
         setEditing(true);
@@ -148,9 +154,12 @@ function GradeDetailsDialog(props: { cell: Cell | null; canEdit: boolean; course
 }
 
 function GradeDetailsContent({ cell, canEdit, courseId, onClose }: { cell: Cell; canEdit: boolean; courseId: string; onClose: () => void }) {
+  const t = useT();
+  const fmt = useFormat();
+  const locale = useLocale();
   const save = useSaveGrade(courseId);
   const [text, setText] = useState(cell.grade?.finalGrade == null ? "" : String(cell.grade.finalGrade));
-  const [feedback, setFeedback] = useState(cell.grade?.feedback?.replace(/<[^>]+>/g, "") ?? "");
+  const [feedback, setFeedback] = useState(cell.grade?.feedback ?? "");
   const history = useQuery({
     queryKey: [...gradesKey(courseId), "history", cell.item.id, cell.user.id],
     queryFn: () => api<GradeHistoryEntry[]>(`/grades/items/${cell.item.id}/users/${cell.user.id}/history`),
@@ -161,14 +170,16 @@ function GradeDetailsContent({ cell, canEdit, courseId, onClose }: { cell: Cell;
   const submit = (overridden: boolean) => {
     const parsed = parseGrade(text, item);
     if (overridden && parsed === undefined) {
-      toast.error(`Enter a grade between ${fmtGrade(item.gradeMin)} and ${fmtGrade(item.gradeMax)}`);
+      toast.error(t("grades.rangeError", "Enter a grade between {min} and {max}", { min: fmtGrade(item.gradeMin, locale), max: fmtGrade(item.gradeMax, locale) }));
       return;
     }
+    // Feedback is rich-text HTML (sanitized server-side); an empty editor clears it.
+    const feedbackHtml = feedback.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").trim() ? feedback : null;
     save.mutate(
-      { itemId: item.id, userId: user.id, finalGrade: overridden ? (parsed ?? null) : null, feedback: feedback.trim() || null, overridden },
+      { itemId: item.id, userId: user.id, finalGrade: overridden ? (parsed ?? null) : null, feedback: feedbackHtml, overridden },
       {
         onSuccess: () => {
-          toast.success(overridden ? "Grade saved" : "Override released");
+          toast.success(overridden ? t("grades.gradeSaved", "Grade saved") : t("grades.overrideReleased", "Override released"));
           onClose();
         },
       },
@@ -181,8 +192,8 @@ function GradeDetailsContent({ cell, canEdit, courseId, onClose }: { cell: Cell;
         <DialogHeader>
           <DialogTitle>{item.name}</DialogTitle>
           <DialogDescription>
-            {fullName(user)} · range {fmtGrade(item.gradeMin)}–{fmtGrade(item.gradeMax)}
-            {grade?.rawGrade != null && ` · activity grade ${fmtGrade(grade.rawGrade)}`}
+            {fullName(user)} · {t("grades.range", "range {min}–{max}", { min: fmtGrade(item.gradeMin, locale), max: fmtGrade(item.gradeMax, locale) })}
+            {grade?.rawGrade != null && ` · ${t("grades.activityGrade", "activity grade {grade}", { grade: fmtGrade(grade.rawGrade, locale) })}`}
           </DialogDescription>
         </DialogHeader>
         {editable ? (
@@ -194,30 +205,30 @@ function GradeDetailsContent({ cell, canEdit, courseId, onClose }: { cell: Cell;
             }}
           >
             <div className="space-y-1.5">
-              <Label htmlFor="grade-value">Grade</Label>
+              <Label htmlFor="grade-value">{t("grades.grade", "Grade")}</Label>
               <Input id="grade-value" inputMode="decimal" value={text} onChange={(e) => setText(e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="grade-feedback">Feedback</Label>
-              <Textarea id="grade-feedback" rows={3} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+              <Label htmlFor="grade-feedback">{t("grades.feedback", "Feedback")}</Label>
+              <RichTextEditor id="grade-feedback" value={feedback} onChange={setFeedback} minHeight={90} />
             </div>
             <DialogFooter>
               {grade?.overridden && (
                 <Button type="button" variant="outline" disabled={save.isPending} onClick={() => submit(false)}>
-                  Release override
+                  {t("grades.releaseOverride", "Release override")}
                 </Button>
               )}
               <Button type="submit" disabled={save.isPending}>
-                Save override
+                {t("grades.saveOverride", "Save override")}
               </Button>
             </DialogFooter>
           </form>
         ) : (
-          <p className="text-sm text-muted-foreground">{item.locked ? "This grade item is locked." : "You can view this grade but not change it."}</p>
+          <p className="text-sm text-muted-foreground">{item.locked ? t("grades.itemLocked", "This grade item is locked.") : t("grades.viewOnly", "You can view this grade but not change it.")}</p>
         )}
         <section aria-labelledby="grade-history-title">
           <h3 id="grade-history-title" className="mb-2 text-sm font-medium">
-            History
+            {t("grades.history", "History")}
           </h3>
           <QueryState query={history}>
             {history.data?.length ? (
@@ -225,18 +236,19 @@ function GradeDetailsContent({ cell, canEdit, courseId, onClose }: { cell: Cell;
                 {history.data.map((h) => (
                   <li key={h.id} className="flex flex-wrap justify-between gap-2 border-b py-1 last:border-0">
                     <span>
-                      {fmtGrade(h.oldGrade)} → <strong>{fmtGrade(h.newGrade)}</strong>{" "}
-                      <span className="text-muted-foreground">({SOURCE_LABELS[h.source] ?? h.source})</span>
+                      {fmtGrade(h.oldGrade, locale)} <span aria-hidden>→</span>
+                      <span className="sr-only">{t("grades.changedTo", "changed to")}</span> <strong>{fmtGrade(h.newGrade, locale)}</strong>{" "}
+                      <span className="text-muted-foreground">({SOURCE_LABELS[h.source] ? t(`grades.source.${h.source}`, SOURCE_LABELS[h.source]!) : h.source})</span>
                     </span>
                     <span className="text-muted-foreground">
-                      {formatDate(h.changedAt)}
+                      {fmt.date(h.changedAt)}
                       {h.changedBy && ` · ${fullName(h.changedBy)}`}
                     </span>
                   </li>
                 ))}
               </ol>
             ) : (
-              <p className="text-sm text-muted-foreground">No changes recorded.</p>
+              <p className="text-sm text-muted-foreground">{t("grades.noHistory", "No changes recorded.")}</p>
             )}
           </QueryState>
         </section>
@@ -246,6 +258,8 @@ function GradeDetailsContent({ cell, canEdit, courseId, onClose }: { cell: Cell;
 }
 
 export function GraderReportView({ courseId, canSetup }: { courseId: string; canSetup: boolean }) {
+  const t = useT();
+  const locale = useLocale();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [details, setDetails] = useState<Cell | null>(null);
@@ -265,8 +279,9 @@ export function GraderReportView({ courseId, canSetup }: { courseId: string; can
           <Search className="absolute top-2 left-2.5 size-4 text-muted-foreground" aria-hidden />
           <Input
             className="pl-8"
-            placeholder="Search learners"
-            aria-label="Search learners"
+            type="search"
+            placeholder={t("grades.searchLearners", "Search learners")}
+            aria-label={t("grades.searchLearners", "Search learners")}
             value={search}
             onChange={(e) => {
               setSearch(e.target.value);
@@ -276,29 +291,31 @@ export function GraderReportView({ courseId, canSetup }: { courseId: string; can
         </div>
         <div className="flex flex-wrap gap-2">
           {canSetup && (
-            <Button variant="outline" size="sm" render={<Link href={`/courses/${courseId}/grades/setup`} />}>
-              <Settings2 /> Gradebook setup
-            </Button>
+            <Link href={`/courses/${courseId}/grades/setup`} className={buttonVariants({ variant: "outline", size: "sm" })}>
+              <Settings2 aria-hidden /> {t("grades.setup", "Gradebook setup")}
+            </Link>
           )}
           {data?.capabilities.export && (
-            <Button variant="outline" size="sm" render={<a href={`/api/v1/grades/courses/${courseId}/export.csv`} download />}>
-              <Download /> Export CSV
-            </Button>
+            <a href={`/api/v1/grades/courses/${courseId}/export.csv`} download className={buttonVariants({ variant: "outline", size: "sm" })}>
+              <Download aria-hidden /> {t("grades.exportCsv", "Export CSV")}
+            </a>
           )}
         </div>
       </div>
       <QueryState query={query}>
         {data && (data.users.total === 0 && !search ? (
-          <EmptyState title="No learners yet" description="Grades appear here once students are enrolled." />
+          <EmptyState title={t("grades.noLearners", "No learners yet")} description={t("grades.noLearnersHint", "Grades appear here once students are enrolled.")} />
         ) : (
           <>
             <div className="overflow-x-auto rounded-lg border">
               <table className="w-full border-collapse text-sm">
-                <caption className="sr-only">Grader report for {data.course.fullname}: learners in rows, grade items in columns</caption>
+                <caption className="sr-only">
+                  {t("grades.graderCaption", "Grader report for {course}: learners in rows, grade items in columns", { course: data.course.fullname })}
+                </caption>
                 <thead className="bg-muted/50">
                   <tr>
                     <th scope="col" className="sticky left-0 z-10 min-w-40 bg-muted px-3 py-2 text-left font-medium">
-                      Learner
+                      {t("grades.learner", "Learner")}
                     </th>
                     {data.items.map((item) => (
                       <th
@@ -308,8 +325,8 @@ export function GraderReportView({ courseId, canSetup }: { courseId: string; can
                       >
                         <div className="flex flex-col items-end gap-0.5">
                           <span className="flex items-center gap-1">
-                            {item.hidden && <EyeOff className="size-3.5 text-muted-foreground" aria-label="Hidden from learners" />}
-                            {item.locked && <Lock className="size-3.5 text-muted-foreground" aria-label="Locked" />}
+                            {item.hidden && <EyeOff className="size-3.5 text-muted-foreground" role="img" aria-label={t("grades.hiddenFromLearners", "Hidden from learners")} />}
+                            {item.locked && <Lock className="size-3.5 text-muted-foreground" role="img" aria-label={t("grades.locked", "Locked")} />}
                             {item.activityId ? (
                               <Link href={`/activities/${item.activityId}`} className="hover:underline">
                                 {item.name}
@@ -318,7 +335,10 @@ export function GraderReportView({ courseId, canSetup }: { courseId: string; can
                               <span>{item.name}</span>
                             )}
                           </span>
-                          <span className="text-xs font-normal text-muted-foreground">/ {fmtGrade(item.gradeMax)}</span>
+                          <span className="text-xs font-normal text-muted-foreground">
+                            <span aria-hidden>/ {fmtGrade(item.gradeMax, locale)}</span>
+                            <span className="sr-only">{t("grades.maxGrade", "out of {max}", { max: fmtGrade(item.gradeMax, locale) })}</span>
+                          </span>
                         </div>
                       </th>
                     ))}
@@ -347,18 +367,19 @@ export function GraderReportView({ courseId, canSetup }: { courseId: string; can
               </table>
             </div>
             <p className="text-xs text-muted-foreground">
-              <span className="font-semibold text-amber-700 dark:text-amber-400">Bold amber</span> grades are teacher overrides. Shaded columns are calculated totals.
+              <span className="font-semibold text-amber-700 dark:text-amber-400">{t("grades.legendBoldAmber", "Bold amber")}</span>{" "}
+              {t("grades.legendOverrides", "grades are teacher overrides. Shaded columns are calculated totals.")}
             </p>
             {pages > 1 && (
               <div className="flex items-center justify-center gap-2">
                 <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                  Previous
+                  {t("common.previous", "Previous")}
                 </Button>
-                <span className="text-sm text-muted-foreground">
-                  Page {page} of {pages}
+                <span className="text-sm text-muted-foreground" aria-live="polite">
+                  {t("grades.pageOf", "Page {page} of {pages}", { page, pages })}
                 </span>
                 <Button variant="outline" size="sm" disabled={page >= pages} onClick={() => setPage(page + 1)}>
-                  Next
+                  {t("common.next", "Next")}
                 </Button>
               </div>
             )}

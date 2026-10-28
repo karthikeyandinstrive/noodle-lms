@@ -1,3 +1,5 @@
+import type { Translate } from "@/lib/i18n";
+
 export type CalendarItemType = "site" | "course" | "user" | "due" | "session";
 
 export type CalendarItem = {
@@ -23,6 +25,11 @@ export const TYPE_LABELS: Record<CalendarItemType, string> = {
   due: "Deadline",
   session: "Session",
 };
+
+/** Translated label for an event type (English fallback from TYPE_LABELS). */
+export function typeLabel(t: Translate, type: CalendarItemType) {
+  return t(`calendar.type.${type}`, TYPE_LABELS[type]);
+}
 
 /** Tailwind classes per event type (dot + chip). */
 export const TYPE_STYLES: Record<CalendarItemType, string> = {

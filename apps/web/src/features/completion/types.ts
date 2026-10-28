@@ -1,3 +1,5 @@
+import type { Translate } from "@/lib/i18n";
+
 export type CompletionState = "incomplete" | "complete" | "complete_pass" | "complete_fail";
 export type CompletionRule = "none" | "manual" | "view" | "submit" | "grade" | "pass";
 
@@ -23,6 +25,7 @@ export type CompletionReport = {
   canOverride: boolean;
 };
 
+/** English labels (kept for callers that don't translate); use stateLabel()/ruleLabel() in components. */
 export const STATE_LABELS: Record<CompletionState, string> = {
   incomplete: "Not completed",
   complete: "Completed",
@@ -38,5 +41,20 @@ export const RULE_LABELS: Record<CompletionRule, string> = {
   grade: "Receive a grade",
   pass: "Pass",
 };
+
+const STATE_KEYS: Record<CompletionState, string> = {
+  incomplete: "completion.state.incomplete",
+  complete: "completion.state.complete",
+  complete_pass: "completion.state.completePass",
+  complete_fail: "completion.state.completeFail",
+};
+
+export function stateLabel(t: Translate, state: CompletionState) {
+  return t(STATE_KEYS[state], STATE_LABELS[state]);
+}
+
+export function ruleLabel(t: Translate, rule: CompletionRule) {
+  return t(`completion.rule.${rule}`, RULE_LABELS[rule]);
+}
 
 export const progressKey = (courseId: string) => ["completion", courseId, "me"] as const;

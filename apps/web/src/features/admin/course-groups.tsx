@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, ErrorAlert, PageHeader, QueryState, fullName } from "@/components/common";
 import { useCourse } from "@/features/courses/use-course";
 import { api, errorMessage, type Paged } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { ConfirmDialog, Field } from "./shared";
 import type { Group, Participant } from "./types";
 
@@ -35,6 +36,7 @@ function useAllParticipants(courseId: string, enabled: boolean) {
 }
 
 function GroupDialog({ courseId, group, participants, onClose }: { courseId: string; group: Group | null; participants: Participant[]; onClose: () => void }) {
+  const t = useT();
   const qc = useQueryClient();
   const [name, setName] = useState(group?.name ?? "");
   const [description, setDescription] = useState(group?.description ?? "");
@@ -51,7 +53,7 @@ function GroupDialog({ courseId, group, participants, onClose }: { courseId: str
       return group ? api(`/courses/${courseId}/groups/${group.id}`, { method: "PATCH", body }) : api(`/courses/${courseId}/groups`, { body });
     },
     onSuccess: () => {
-      toast.success(group ? "Group updated" : "Group created");
+      toast.success(group ? t("admin.groups.updated", "Group updated") : t("admin.groups.created", "Group created"));
       void qc.invalidateQueries({ queryKey: groupsKey(courseId) });
       onClose();
     },
@@ -69,7 +71,7 @@ function GroupDialog({ courseId, group, participants, onClose }: { courseId: str
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{group ? "Edit group" : "New group"}</DialogTitle>
+          <DialogTitle>{group ? t("admin.groups.editGroup", "Edit group") : t("admin.groups.newGroup", "New group")}</DialogTitle>
         </DialogHeader>
         <form
           className="space-y-4"
@@ -80,28 +82,40 @@ function GroupDialog({ courseId, group, participants, onClose }: { courseId: str
           }}
         >
           {error ? <ErrorAlert error={error} /> : null}
-          <Field id="g-name" label="Name">
+          <Field id="g-name" label={t("common.name", "Name")}>
             <Input id="g-name" required maxLength={255} value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field id="g-desc" label="Description">
+          <Field id="g-desc" label={t("common.description", "Description")}>
             <Textarea id="g-desc" rows={2} maxLength={5000} value={description} onChange={(e) => setDescription(e.target.value)} />
           </Field>
           <fieldset className="space-y-2">
             <legend className="text-sm font-medium">
-              Members <span className="font-normal text-muted-foreground">({members.size} selected)</span>
+              {t("admin.groups.members", "Members")}{" "}
+              <span className="font-normal text-muted-foreground">{t("admin.groups.selectedCount", "({count} selected)", { count: members.size })}</span>
             </legend>
             <div className="relative">
-              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input className="pl-8" type="search" placeholder="Filter participants" aria-label="Filter participants" value={filter} onChange={(e) => setFilter(e.target.value)} />
+              <Search aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="pl-8"
+                type="search"
+                placeholder={t("admin.groups.filterParticipants", "Filter participants")}
+                aria-label={t("admin.groups.filterParticipants", "Filter participants")}
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
             </div>
             <ul className="max-h-60 divide-y overflow-auto rounded-md border">
-              {shown.length === 0 && <li className="p-2 text-sm text-muted-foreground">No participants.</li>}
+              {shown.length === 0 && (
+                <li role="status" className="p-2 text-sm text-muted-foreground">
+                  {t("admin.groups.noParticipants", "No participants.")}
+                </li>
+              )}
               {shown.map((p) => (
                 <li key={p.id}>
-                  <label className="flex cursor-pointer items-center gap-2 p-2 text-sm hover:bg-muted/50">
+                  <label className="flex cursor-pointer items-center gap-2 p-2 text-sm hover:bg-muted/50 has-focus-visible:ring-2 has-focus-visible:ring-ring">
                     <input type="checkbox" checked={members.has(p.id)} onChange={() => toggle(p.id)} />
                     <span className="min-w-0 flex-1 truncate">{fullName(p)}</span>
-                    {p.status === "suspended" && <span className="text-xs text-muted-foreground">suspended</span>}
+                    {p.status === "suspended" && <span className="text-xs text-muted-foreground">{t("admin.groups.suspended", "suspended")}</span>}
                   </label>
                 </li>
               ))}
@@ -109,10 +123,10 @@ function GroupDialog({ courseId, group, participants, onClose }: { courseId: str
           </fieldset>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
-              Cancel
+              {t("common.cancel", "Cancel")}
             </Button>
             <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? "Saving…" : "Save group"}
+              {save.isPending ? t("common.saving", "Saving…") : t("admin.groups.saveGroup", "Save group")}
             </Button>
           </DialogFooter>
         </form>
@@ -122,6 +136,7 @@ function GroupDialog({ courseId, group, participants, onClose }: { courseId: str
 }
 
 export function CourseGroups() {
+  const t = useT();
   const course = useCourse();
   const qc = useQueryClient();
   const courseId = course.courseId;
@@ -133,7 +148,7 @@ export function CourseGroups() {
   const remove = useMutation({
     mutationFn: (id: string) => api(`/courses/${courseId}/groups/${id}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Group deleted");
+      toast.success(t("admin.groups.deleted", "Group deleted"));
       setDeleting(null);
       void qc.invalidateQueries({ queryKey: groupsKey(courseId) });
     },
@@ -141,24 +156,24 @@ export function CourseGroups() {
   });
 
   if (!course.data) return null;
-  if (!canManage) return <EmptyState title="You can't manage groups in this course" />;
+  if (!canManage) return <EmptyState title={t("admin.groups.cantManage", "You can't manage groups in this course")} />;
   const nameOf = new Map((participants.data ?? []).map((p) => [p.id, fullName(p)]));
 
   return (
     <div>
       <PageHeader
-        title="Groups"
+        title={t("admin.groups.title", "Groups")}
         className="mb-4"
-        description="Groups split participants for separate forums, assignments and reports."
+        description={t("admin.groups.description", "Groups split participants for separate forums, assignments and reports.")}
         actions={
           <Button onClick={() => setEditing("new")} disabled={!participants.data}>
-            <Plus /> New group
+            <Plus aria-hidden /> {t("admin.groups.newGroup", "New group")}
           </Button>
         }
       />
       <QueryState query={groups}>
         {groups.data?.length === 0 ? (
-          <EmptyState title="No groups yet" />
+          <EmptyState title={t("admin.groups.empty", "No groups yet")} />
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {groups.data?.map((g) => (
@@ -167,15 +182,15 @@ export function CourseGroups() {
                   <div className="min-w-0">
                     <CardTitle className="truncate">{g.name}</CardTitle>
                     <CardDescription>
-                      {g.memberIds.length} member{g.memberIds.length === 1 ? "" : "s"}
+                      {g.memberIds.length === 1 ? t("admin.shared.memberCount.one", "1 member") : t("admin.shared.memberCount.other", "{count} members", { count: g.memberIds.length })}
                     </CardDescription>
                   </div>
                   <div className="flex shrink-0">
-                    <Button variant="ghost" size="icon-sm" aria-label={`Edit ${g.name}`} onClick={() => setEditing(g)} disabled={!participants.data}>
-                      <Pencil />
+                    <Button variant="ghost" size="icon-sm" aria-label={t("admin.shared.editName", "Edit {name}", { name: g.name })} onClick={() => setEditing(g)} disabled={!participants.data}>
+                      <Pencil aria-hidden />
                     </Button>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Delete ${g.name}`} onClick={() => setDeleting(g)}>
-                      <Trash2 />
+                    <Button variant="ghost" size="icon-sm" aria-label={t("admin.shared.deleteName", "Delete {name}", { name: g.name })} onClick={() => setDeleting(g)}>
+                      <Trash2 aria-hidden />
                     </Button>
                   </div>
                 </CardHeader>
@@ -195,16 +210,16 @@ export function CourseGroups() {
           </div>
         )}
       </QueryState>
-      {participants.isError && <ErrorAlert error={participants.error} title="Could not load participants" />}
+      {participants.isError && <ErrorAlert error={participants.error} title={t("admin.groups.loadParticipantsError", "Could not load participants")} />}
       {editing && participants.data && (
         <GroupDialog courseId={courseId} group={editing === "new" ? null : editing} participants={participants.data} onClose={() => setEditing(null)} />
       )}
       <ConfirmDialog
         open={!!deleting}
         onOpenChange={(o) => !o && setDeleting(null)}
-        title={`Delete ${deleting?.name}?`}
-        description="Members stay enrolled in the course."
-        confirmLabel="Delete group"
+        title={t("admin.shared.deleteTitle", "Delete {name}?", { name: deleting?.name ?? "" })}
+        description={t("admin.groups.deleteDescription", "Members stay enrolled in the course.")}
+        confirmLabel={t("admin.groups.deleteGroup", "Delete group")}
         destructive
         pending={remove.isPending}
         onConfirm={() => deleting && remove.mutate(deleting.id)}

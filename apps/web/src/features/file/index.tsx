@@ -2,9 +2,10 @@
 
 import { Download, FileDown } from "lucide-react";
 import { FileInput } from "@/components/file-input";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { useT } from "@/lib/i18n";
 import type { ActivityTypeUI, ActivityViewProps, SettingsFieldsProps } from "../activities/types";
 import { formatBytes, NativeSelectClass } from "../certificate/shared";
 
@@ -18,8 +19,9 @@ type FileSettings = {
 };
 
 function View({ activity }: ActivityViewProps) {
+  const t = useT();
   const s = (activity.settings ?? {}) as Partial<FileSettings>;
-  if (!s.fileId) return <p className="text-sm text-muted-foreground">No file has been uploaded.</p>;
+  if (!s.fileId) return <p className="text-sm text-muted-foreground">{t("resource.file.none", "No file has been uploaded.")}</p>;
   const src = `/api/v1/content/${activity.id}/file`;
   const download = `${src}?download=true`;
   const mime = s.mimeType ?? "";
@@ -41,9 +43,9 @@ function View({ activity }: ActivityViewProps) {
               </p>
             </div>
           </div>
-          <Button render={<a href={download} download />}>
-            <Download /> Download
-          </Button>
+          <a href={download} download className={buttonVariants()}>
+            <Download aria-hidden /> {t("common.download", "Download")}
+          </a>
         </CardContent>
       </Card>
       {inline && mime === "application/pdf" && (
@@ -55,7 +57,7 @@ function View({ activity }: ActivityViewProps) {
       )}
       {inline && mime.startsWith("video/") && (
         <video src={src} controls preload="metadata" className="w-full rounded-xl border bg-black">
-          Your browser cannot play this video. <a href={download}>Download it</a> instead.
+          {t("resource.file.videoUnsupported", "Your browser cannot play this video.")} <a href={download}>{t("resource.file.downloadInstead", "Download it instead")}</a>
         </video>
       )}
       {inline && mime.startsWith("audio/") && <audio src={src} controls preload="metadata" className="w-full" />}
@@ -64,23 +66,26 @@ function View({ activity }: ActivityViewProps) {
 }
 
 function SettingsFields({ value, onChange }: SettingsFieldsProps) {
+  const t = useT();
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
-        <Label>File</Label>
-        <FileInput value={(value.fileId as string | null) ?? null} onChange={(fileId) => onChange({ ...value, fileId })} />
-        {typeof value.filename === "string" && value.fileId ? <p className="text-xs text-muted-foreground">Current: {value.filename}</p> : null}
+        <Label htmlFor="file-upload">{t("resource.file.label", "File")}</Label>
+        <FileInput id="file-upload" value={(value.fileId as string | null) ?? null} onChange={(fileId) => onChange({ ...value, fileId })} />
+        {typeof value.filename === "string" && value.fileId ? (
+          <p className="text-xs text-muted-foreground">{t("resource.file.currentNamed", "Current: {name}", { name: value.filename })}</p>
+        ) : null}
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="file-display">Display</Label>
+        <Label htmlFor="file-display">{t("resource.file.display", "Display")}</Label>
         <select
           id="file-display"
           className={NativeSelectClass}
           value={(value.display as string) ?? "inline"}
           onChange={(e) => onChange({ ...value, display: e.target.value })}
         >
-          <option value="inline">Show in the page when possible (PDF, images, video, audio)</option>
-          <option value="download">Download only</option>
+          <option value="inline">{t("resource.file.displayInline", "Show in the page when possible (PDF, images, video, audio)")}</option>
+          <option value="download">{t("resource.file.displayDownload", "Download only")}</option>
         </select>
       </div>
     </div>

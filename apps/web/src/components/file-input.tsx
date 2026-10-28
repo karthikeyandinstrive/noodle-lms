@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { errorMessage, fileUrl, uploadFile, type UploadedFile } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 /** Single-file picker that uploads immediately and reports the file id. */
 export function FileInput({
@@ -13,13 +14,19 @@ export function FileInput({
   accept,
   component,
   area,
+  id,
+  "aria-label": ariaLabel,
 }: {
   value: string | null;
   onChange: (fileId: string | null, file?: UploadedFile) => void;
   accept?: string;
   component?: string;
   area?: string;
+  /** Lets a <Label htmlFor> point at the picker button. */
+  id?: string;
+  "aria-label"?: string;
 }) {
+  const t = useT();
   const ref = useRef<HTMLInputElement>(null);
   const [name, setName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -31,6 +38,8 @@ export function FileInput({
         type="file"
         accept={accept}
         className="hidden"
+        tabIndex={-1}
+        aria-hidden
         onChange={async (e) => {
           const file = e.target.files?.[0];
           if (!file) return;
@@ -47,15 +56,18 @@ export function FileInput({
           }
         }}
       />
-      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => ref.current?.click()}>
-        <Paperclip /> {busy ? "Uploading…" : value ? "Replace file" : "Choose file"}
+      <Button id={id} type="button" variant="outline" size="sm" disabled={busy} aria-label={ariaLabel} onClick={() => ref.current?.click()}>
+        <Paperclip aria-hidden /> {busy ? t("file.uploading", "Uploading…") : value ? t("file.replace", "Replace file") : t("file.choose", "Choose file")}
       </Button>
+      <span className="sr-only" role="status" aria-live="polite">
+        {busy ? t("file.uploading", "Uploading…") : ""}
+      </span>
       {value && (
         <>
           <a href={fileUrl(value)} className="max-w-48 truncate text-sm text-primary hover:underline" target="_blank" rel="noreferrer">
-            {name ?? "Current file"}
+            {name ?? t("file.current", "Current file")}
           </a>
-          <Button type="button" variant="ghost" size="icon-sm" aria-label="Remove file" onClick={() => onChange(null)}>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={t("file.remove", "Remove file")} onClick={() => onChange(null)}>
             <X />
           </Button>
         </>
@@ -76,6 +88,7 @@ export function MultiFileInput({
   maxFiles?: number;
   accept?: string;
 }) {
+  const t = useT();
   const ref = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   return (
@@ -86,6 +99,8 @@ export function MultiFileInput({
         multiple
         accept={accept}
         className="hidden"
+        tabIndex={-1}
+        aria-hidden
         onChange={async (e) => {
           const picked = Array.from(e.target.files ?? []).slice(0, maxFiles - files.length);
           setBusy(true);
@@ -104,17 +119,20 @@ export function MultiFileInput({
       <ul className="space-y-1">
         {files.map((f) => (
           <li key={f.id} className="flex items-center gap-2 text-sm">
-            <Paperclip className="size-3.5 text-muted-foreground" />
+            <Paperclip aria-hidden className="size-3.5 text-muted-foreground" />
             <span className="truncate">{f.filename}</span>
-            <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${f.filename}`} onClick={() => onChange(files.filter((x) => x.id !== f.id))}>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label={t("file.removeNamed", "Remove {name}", { name: f.filename })} onClick={() => onChange(files.filter((x) => x.id !== f.id))}>
               <X />
             </Button>
           </li>
         ))}
       </ul>
       <Button type="button" variant="outline" size="sm" disabled={busy || files.length >= maxFiles} onClick={() => ref.current?.click()}>
-        <Paperclip /> {busy ? "Uploading…" : "Add files"}
+        <Paperclip aria-hidden /> {busy ? t("file.uploading", "Uploading…") : t("file.addFiles", "Add files")}
       </Button>
+      <span className="sr-only" role="status" aria-live="polite">
+        {busy ? t("file.uploading", "Uploading…") : ""}
+      </span>
     </div>
   );
 }

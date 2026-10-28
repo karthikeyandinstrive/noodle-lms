@@ -10,8 +10,7 @@ import { emit, type EventMap } from "../../core/events";
 import { notify } from "../../core/notify";
 import { hasCapability, requireCapability } from "../../core/rbac";
 import { cleanHtml } from "../../core/sanitize";
-import { offset, ok, paged, zDate, zId, zOk, zPagination, zUserSummary } from "../../core/schemas";
-import { activityById } from "../activities/service";
+import { offset, ok, paged, zDate, zId, zOk, zPagination, zUserSummary, patchSchema } from "../../core/schemas";
 import { loadCourse, loadCourseWith } from "../courses/service";
 import { AGGREGATIONS, formatGrade, toCsv, toPercent } from "./aggregate";
 import {
@@ -403,12 +402,10 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         await recalculateCourseTotals(tx, { organizationId: req.org.id, courseId: course.id, userIds: [userId] });
 
         if (!item.hidden && oldGrade !== finalGrade) {
-          let type: "quiz_graded" | "assignment_graded" = "assignment_graded";
-          if (item.activityId) type = (await activityById(tx, item.activityId)).type === "quiz" ? "quiz_graded" : "assignment_graded";
           await notify(tx, {
             organizationId: req.org.id,
             userIds: [userId],
-            type,
+            type: "grade_updated",
             title: `Your grade for "${item.name}" was updated`,
             body: `${course.fullname}: ${finalGrade === null ? "grade removed" : `${formatGrade(finalGrade)} / ${formatGrade(item.gradeMax)}`}`,
             link: `/courses/${course.id}/grades`,
@@ -702,7 +699,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["Gradebook"],
         summary: "Update a grade category (aggregation, drop lowest, parent, weight)",
         params: z.object({ id: zId }),
-        body: zCategoryInput.partial().extend({ parentId: zId.optional() }),
+        body: patchSchema(zCategoryInput).extend({ parentId: zId.optional() }),
         response: { 200: zCategory },
       },
     },

@@ -1,7 +1,33 @@
-import { PDFDocument, StandardFonts, rgb, type PDFImage } from "pdf-lib";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import fontkit from "@pdf-lib/fontkit";
+import { PDFDocument, rgb, type PDFImage } from "pdf-lib";
 import QRCode from "qrcode";
 import type { CertificateElement } from "@lms/db";
-import { BOLD_FROM_PT, lineLeft, mmToPt, pageSizeMm, parseHexColor, renderPlaceholders, toEncodable, wrapText, type CertificateValues } from "./render";
+import { BOLD_FROM_PT, lineLeft, mmToPt, pageSizeMm, parseHexColor, renderPlaceholders, wrapText, type CertificateValues } from "./render";
+
+/**
+ * Certificates use DejaVu Sans (regular + bold), which covers Latin, Greek and
+ * Cyrillic, so learners' names render as typed. The same files are served to the
+ * template designer (GET /certificates/fonts/:file) so the preview matches.
+ */
+export const CERTIFICATE_FONTS = { regular: "DejaVuSans.ttf", bold: "DejaVuSans-Bold.ttf" } as const;
+export type CertificateFontFile = (typeof CERTIFICATE_FONTS)[keyof typeof CERTIFICATE_FONTS];
+
+const fontDir = join(dirname(createRequire(import.meta.url).resolve("dejavu-fonts-ttf/package.json")), "ttf");
+const fontCache = new Map<string, Promise<Uint8Array>>();
+
+/** Font bytes, read once per process. */
+export function certificateFont(file: CertificateFontFile): Promise<Uint8Array> {
+  let p = fontCache.get(file);
+  if (!p) {
+    p = readFile(join(fontDir, file)).then((b) => new Uint8Array(b));
+    p.catch(() => fontCache.delete(file));
+    fontCache.set(file, p);
+  }
+  return p;
+}
 
 export type ImageInput = { bytes: Uint8Array; mimeType: string };
 
@@ -26,7 +52,7 @@ async function embedImage(doc: PDFDocument, img: ImageInput): Promise<PDFImage |
   return null;
 }
 
-/** Renders an A4 certificate PDF (pdf-lib, standard fonts). */
+/** Renders an A4 certificate PDF (pdf-lib, embedded DejaVu Sans subsets). */
 export async function renderCertificatePdf(input: CertificatePdfInput): Promise<Buffer> {
   const doc = await PDFDocument.create();
   doc.setTitle(input.title ?? "Certificate");
@@ -41,15 +67,16 @@ export async function renderCertificatePdf(input: CertificatePdfInput): Promise<
     if (bg) page.drawImage(bg, { x: 0, y: 0, width: page.getWidth(), height: pageH });
   }
 
-  const regular = await doc.embedFont(StandardFonts.Helvetica);
-  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const supported = new Set(regular.getCharacterSet());
+  doc.registerFontkit(fontkit);
+  const [regularBytes, boldBytes] = await Promise.all([certificateFont(CERTIFICATE_FONTS.regular), certificateFont(CERTIFICATE_FONTS.bold)]);
+  const regular = await doc.embedFont(regularBytes, { subset: true });
+  const bold = await doc.embedFont(boldBytes, { subset: true });
 
   for (const el of input.elements) {
     if (el.type === "text") {
       const fontSize = el.fontSize ?? 14;
       const font = fontSize >= BOLD_FROM_PT ? bold : regular;
-      const text = toEncodable(renderPlaceholders(el.text ?? "", input.values), supported);
+      const text = renderPlaceholders(el.text ?? "", input.values);
       const color = parseHexColor(el.color);
       const widthMm = (s: string) => font.widthOfTextAtSize(s, fontSize) / mmToPt(1);
       const lines = wrapText(text, el.width ?? null, widthMm);

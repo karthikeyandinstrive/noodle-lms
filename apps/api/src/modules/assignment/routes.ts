@@ -4,6 +4,7 @@ import { assignmentFeedback, assignmentSubmissions, submissionFiles, users, type
 import { z } from "zod";
 import { requireUser } from "../../core/auth";
 import { audit } from "../../core/audit";
+import { hmac } from "../../core/crypto";
 import { badRequest, conflict, forbidden, notFound } from "../../core/errors";
 import { emit, type EventMap } from "../../core/events";
 import { notify } from "../../core/notify";
@@ -11,8 +12,12 @@ import { hasCapability } from "../../core/rbac";
 import { cleanHtml } from "../../core/sanitize";
 import { zDate, zId, zNullableDate } from "../../core/schemas";
 import { pushGrade } from "../gradebook/service";
-import { isLate, isPastCutoff, submissionState } from "./rules";
-import { feedbackOf, filesOf, gradersOf, latestFeedbackFor, latestSubmission, loadAssignment, participantNumbers, saveContent, studentsOf } from "./service";
+import { isLate, isPastCutoff, participantNumbersFor, submissionState } from "./rules";
+import { feedbackOf, filesOf, gradersOf, latestFeedbackFor, latestSubmission, loadAssignment, saveContent, studentsOf } from "./service";
+
+/** Stable blind-marking numbers, keyed with the server secret so they can't be computed from ids. */
+const participantNumbers = (assignmentId: string, userIds: string[]) =>
+  participantNumbersFor(assignmentId, userIds, (m) => Buffer.from(hmac(`blind:${m}`), "base64url").readUInt32BE(0));
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
 

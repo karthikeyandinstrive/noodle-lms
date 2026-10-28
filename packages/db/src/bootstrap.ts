@@ -1,5 +1,5 @@
 import { hash } from "@node-rs/argon2";
-import { ARCHETYPES, defaultCapabilities } from "@lms/rbac";
+import { ARCHETYPES, CAPABILITY_NAMES, defaultCapabilities } from "@lms/rbac";
 import type { DB } from "./client";
 import { createContext } from "./helpers";
 import { organizations, roleAssignments, roleCapabilities, roles, users } from "./schema";
@@ -25,7 +25,10 @@ export async function bootstrapOrganization(
     adminArchetype?: "org_admin" | "super_admin";
   },
 ) {
-  const [org] = await tx.insert(organizations).values({ name: input.name, slug: input.slug }).returning();
+  const [org] = await tx
+    .insert(organizations)
+    .values({ name: input.name, slug: input.slug, settings: { _knownCapabilities: CAPABILITY_NAMES } })
+    .returning();
   const organizationId = org!.id;
   const systemContext = await createContext(tx, { organizationId, level: "system", instanceId: null, parentId: null });
 

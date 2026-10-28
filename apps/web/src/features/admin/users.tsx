@@ -10,8 +10,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, ErrorAlert, PageHeader, QueryState, formatDate, fullName } from "@/components/common";
+import { EmptyState, ErrorAlert, PageHeader, QueryState, fullName } from "@/components/common";
 import { api, errorMessage, type Paged } from "@/lib/api";
+import { useFormat, useT } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
 import { parseUserCsv, type ImportParse } from "./csv";
 import { Field, NativeSelect, Pager, RequireCapability, useDebounced } from "./shared";
@@ -20,12 +21,14 @@ import type { AdminUser, UserStatus } from "./types";
 export const usersKey = ["admin", "users"] as const;
 
 export function StatusBadge({ status }: { status: UserStatus }) {
-  if (status === "active") return <Badge variant="secondary">Active</Badge>;
-  if (status === "suspended") return <Badge variant="destructive">Suspended</Badge>;
-  return <Badge variant="outline">Invited</Badge>;
+  const t = useT();
+  if (status === "active") return <Badge variant="secondary">{t("admin.users.status.active", "Active")}</Badge>;
+  if (status === "suspended") return <Badge variant="destructive">{t("admin.shared.suspended", "Suspended")}</Badge>;
+  return <Badge variant="outline">{t("admin.users.status.invited", "Invited")}</Badge>;
 }
 
 function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const t = useT();
   const qc = useQueryClient();
   const [v, setV] = useState({ email: "", firstName: "", lastName: "", password: "", mode: "invite" as "invite" | "password" });
   const [error, setError] = useState<unknown>(null);
@@ -40,7 +43,7 @@ function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
         },
       }),
     onSuccess: (u) => {
-      toast.success(v.mode === "invite" ? `Invitation sent to ${u.email}` : `${fullName(u)} created`);
+      toast.success(v.mode === "invite" ? t("admin.users.invitationSent", "Invitation sent to {email}", { email: u.email }) : t("admin.shared.created", "{name} created", { name: fullName(u) }));
       void qc.invalidateQueries({ queryKey: usersKey });
       setV({ email: "", firstName: "", lastName: "", password: "", mode: "invite" });
       onOpenChange(false);
@@ -51,8 +54,8 @@ function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Add user</DialogTitle>
-          <DialogDescription>Invite by email, or set an initial password yourself.</DialogDescription>
+          <DialogTitle>{t("admin.users.addUser", "Add user")}</DialogTitle>
+          <DialogDescription>{t("admin.users.addUserDescription", "Invite by email, or set an initial password yourself.")}</DialogDescription>
         </DialogHeader>
         <form
           className="space-y-4"
@@ -64,36 +67,36 @@ function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
         >
           {error ? <ErrorAlert error={error} /> : null}
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field id="nu-first" label="First name">
+            <Field id="nu-first" label={t("admin.shared.firstName", "First name")}>
               <Input id="nu-first" required maxLength={100} autoComplete="off" value={v.firstName} onChange={(e) => setV({ ...v, firstName: e.target.value })} />
             </Field>
-            <Field id="nu-last" label="Last name">
+            <Field id="nu-last" label={t("admin.shared.lastName", "Last name")}>
               <Input id="nu-last" required maxLength={100} autoComplete="off" value={v.lastName} onChange={(e) => setV({ ...v, lastName: e.target.value })} />
             </Field>
           </div>
-          <Field id="nu-email" label="Email">
+          <Field id="nu-email" label={t("common.email", "Email")}>
             <Input id="nu-email" type="email" required maxLength={320} autoComplete="off" value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })} />
           </Field>
           <fieldset className="space-y-2">
-            <legend className="text-sm font-medium">Access</legend>
+            <legend className="text-sm font-medium">{t("admin.users.access", "Access")}</legend>
             <label className="flex items-center gap-2 text-sm">
-              <input type="radio" name="nu-mode" checked={v.mode === "invite"} onChange={() => setV({ ...v, mode: "invite" })} /> Email an invitation link
+              <input type="radio" name="nu-mode" checked={v.mode === "invite"} onChange={() => setV({ ...v, mode: "invite" })} /> {t("admin.users.modeInvite", "Email an invitation link")}
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <input type="radio" name="nu-mode" checked={v.mode === "password"} onChange={() => setV({ ...v, mode: "password" })} /> Set a password now
+              <input type="radio" name="nu-mode" checked={v.mode === "password"} onChange={() => setV({ ...v, mode: "password" })} /> {t("admin.users.modePassword", "Set a password now")}
             </label>
           </fieldset>
           {v.mode === "password" && (
-            <Field id="nu-pass" label="Password" hint="At least 10 characters.">
+            <Field id="nu-pass" label={t("admin.users.password", "Password")} hint={t("admin.shared.passwordHint", "At least 10 characters.")}>
               <Input id="nu-pass" type="password" required minLength={10} maxLength={200} autoComplete="new-password" value={v.password} onChange={(e) => setV({ ...v, password: e.target.value })} />
             </Field>
           )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
+              {t("common.cancel", "Cancel")}
             </Button>
             <Button type="submit" disabled={create.isPending}>
-              {create.isPending ? "Creating…" : "Create user"}
+              {create.isPending ? t("admin.shared.creating", "Creating…") : t("admin.users.createUser", "Create user")}
             </Button>
           </DialogFooter>
         </form>
@@ -103,13 +106,15 @@ function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
 }
 
 function ImportUsersDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const t = useT();
   const qc = useQueryClient();
   const [parsed, setParsed] = useState<ImportParse | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const run = useMutation({
     mutationFn: () => api<{ created: number; skipped: string[] }>("/users/import", { body: { rows: parsed!.rows } }),
     onSuccess: (r) => {
-      toast.success(`${r.created} user${r.created === 1 ? "" : "s"} invited${r.skipped.length ? `, ${r.skipped.length} already existed` : ""}`);
+      const invited = r.created === 1 ? t("admin.users.import.invited.one", "1 user invited") : t("admin.users.import.invited.other", "{count} users invited", { count: r.created });
+      toast.success(r.skipped.length ? t("admin.users.import.invitedSkipped", "{invited}, {skipped} already existed", { invited, skipped: r.skipped.length }) : invited);
       void qc.invalidateQueries({ queryKey: usersKey });
       setParsed(null);
       setFileName(null);
@@ -121,13 +126,14 @@ function ImportUsersDialog({ open, onOpenChange }: { open: boolean; onOpenChange
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Import users from CSV</DialogTitle>
+          <DialogTitle>{t("admin.users.import.title", "Import users from CSV")}</DialogTitle>
           <DialogDescription>
-            Columns: <code>email,firstName,lastName</code> (header row optional). Each new user receives an invitation email; existing emails are skipped.
+            {t("admin.users.import.columns", "Columns:")} <code>email,firstName,lastName</code>{" "}
+            {t("admin.users.import.help", "(header row optional). Each new user receives an invitation email; existing emails are skipped.")}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          <Field id="csv-file" label="CSV file">
+          <Field id="csv-file" label={t("admin.users.import.csvFile", "CSV file")}>
             <Input
               id="csv-file"
               type="file"
@@ -136,19 +142,24 @@ function ImportUsersDialog({ open, onOpenChange }: { open: boolean; onOpenChange
                 const file = e.target.files?.[0];
                 if (!file) return;
                 if (file.size > 2 * 1024 * 1024) {
-                  toast.error("The file is larger than 2 MB");
+                  toast.error(t("admin.users.import.tooLarge", "The file is larger than 2 MB"));
                   return;
                 }
                 setFileName(file.name);
-                setParsed(parseUserCsv(await file.text()));
+                setParsed(parseUserCsv(await file.text(), t));
               }}
             />
           </Field>
           {parsed && (
-            <div className="space-y-2 text-sm" aria-live="polite">
-              <p>
-                <strong>{parsed.rows.length}</strong> valid row{parsed.rows.length === 1 ? "" : "s"} in {fileName}
-                {parsed.errors.length > 0 && <>, {parsed.errors.length} problem{parsed.errors.length === 1 ? "" : "s"}</>}
+            <div className="space-y-2 text-sm">
+              <p role="status">
+                {parsed.rows.length === 1
+                  ? t("admin.users.import.validRows.one", "1 valid row in {file}", { file: fileName ?? "" })
+                  : t("admin.users.import.validRows.other", "{count} valid rows in {file}", { count: parsed.rows.length, file: fileName ?? "" })}
+                {parsed.errors.length > 0 &&
+                  (parsed.errors.length === 1
+                    ? t("admin.users.import.problems.one", ", 1 problem")
+                    : t("admin.users.import.problems.other", ", {count} problems", { count: parsed.errors.length }))}
               </p>
               {parsed.errors.length > 0 && (
                 <ul className="max-h-32 list-disc overflow-auto rounded-md border bg-muted/40 p-2 pl-6 text-xs text-destructive">
@@ -159,11 +170,11 @@ function ImportUsersDialog({ open, onOpenChange }: { open: boolean; onOpenChange
               )}
               {parsed.rows.length > 0 && (
                 <div className="max-h-48 overflow-auto rounded-md border">
-                  <Table>
+                  <Table aria-label={t("admin.users.import.preview", "Import preview")}>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Email</TableHead>
-                        <TableHead>Name</TableHead>
+                        <TableHead>{t("common.email", "Email")}</TableHead>
+                        <TableHead>{t("common.name", "Name")}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -175,7 +186,7 @@ function ImportUsersDialog({ open, onOpenChange }: { open: boolean; onOpenChange
                       ))}
                     </TableBody>
                   </Table>
-                  {parsed.rows.length > 20 && <p className="p-2 text-xs text-muted-foreground">…and {parsed.rows.length - 20} more</p>}
+                  {parsed.rows.length > 20 && <p className="p-2 text-xs text-muted-foreground">{t("admin.users.import.more", "…and {count} more", { count: parsed.rows.length - 20 })}</p>}
                 </div>
               )}
             </div>
@@ -183,10 +194,10 @@ function ImportUsersDialog({ open, onOpenChange }: { open: boolean; onOpenChange
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t("common.cancel", "Cancel")}
           </Button>
           <Button disabled={!parsed?.rows.length || run.isPending} onClick={() => run.mutate()}>
-            {run.isPending ? "Importing…" : `Import ${parsed?.rows.length ?? 0} users`}
+            {run.isPending ? t("admin.users.import.importing", "Importing…") : t("admin.users.import.submit", "Import {count} users", { count: parsed?.rows.length ?? 0 })}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -195,6 +206,8 @@ function ImportUsersDialog({ open, onOpenChange }: { open: boolean; onOpenChange
 }
 
 export function UsersAdmin() {
+  const t = useT();
+  const fmt = useFormat();
   const session = useSession();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"" | UserStatus>("");
@@ -212,16 +225,16 @@ export function UsersAdmin() {
   return (
     <RequireCapability capability="user:view">
       <PageHeader
-        title="Users"
-        description="Everyone with an account in this organization."
+        title={t("admin.users.title", "Users")}
+        description={t("admin.users.description", "Everyone with an account in this organization.")}
         actions={
           canManage && (
             <>
               <Button variant="outline" onClick={() => setImporting(true)}>
-                <Upload /> Import CSV
+                <Upload aria-hidden /> {t("admin.users.importCsv", "Import CSV")}
               </Button>
               <Button onClick={() => setCreating(true)}>
-                <UserPlus /> Add user
+                <UserPlus aria-hidden /> {t("admin.users.addUser", "Add user")}
               </Button>
             </>
           )
@@ -229,12 +242,12 @@ export function UsersAdmin() {
       />
       <div className="mb-4 flex flex-col gap-2 sm:flex-row">
         <div className="relative flex-1">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Search aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="pl-8"
             type="search"
-            placeholder="Search name or email"
-            aria-label="Search users"
+            placeholder={t("admin.users.searchPlaceholder", "Search name or email")}
+            aria-label={t("admin.shared.searchUsers", "Search users")}
             value={search}
             onChange={(e) => {
               setSearch(e.target.value);
@@ -244,33 +257,33 @@ export function UsersAdmin() {
         </div>
         <NativeSelect
           className="sm:w-44"
-          aria-label="Filter by status"
+          aria-label={t("admin.users.filterStatus", "Filter by status")}
           value={status}
           onChange={(e) => {
             setStatus(e.target.value as "" | UserStatus);
             setPage(1);
           }}
         >
-          <option value="">All statuses</option>
-          <option value="active">Active</option>
-          <option value="pending">Invited</option>
-          <option value="suspended">Suspended</option>
+          <option value="">{t("admin.users.allStatuses", "All statuses")}</option>
+          <option value="active">{t("admin.users.status.active", "Active")}</option>
+          <option value="pending">{t("admin.users.status.invited", "Invited")}</option>
+          <option value="suspended">{t("admin.shared.suspended", "Suspended")}</option>
         </NativeSelect>
       </div>
       <QueryState query={users}>
         {users.data && users.data.items.length === 0 ? (
-          <EmptyState title="No users found" description={q || status ? "Try a different search or filter." : undefined} />
+          <EmptyState title={t("admin.users.noneFound", "No users found")} description={q || status ? t("admin.shared.tryDifferentFilter", "Try a different search or filter.") : undefined} />
         ) : (
           users.data && (
             <>
               <div className="overflow-x-auto rounded-xl border">
-                <Table>
+                <Table aria-label={t("admin.users.title", "Users")}>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead className="hidden md:table-cell">Email</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="hidden lg:table-cell">Last sign-in</TableHead>
+                      <TableHead>{t("common.name", "Name")}</TableHead>
+                      <TableHead className="hidden md:table-cell">{t("common.email", "Email")}</TableHead>
+                      <TableHead>{t("common.status", "Status")}</TableHead>
+                      <TableHead className="hidden lg:table-cell">{t("admin.shared.lastSignIn", "Last sign-in")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -286,7 +299,7 @@ export function UsersAdmin() {
                         <TableCell>
                           <StatusBadge status={u.status} />
                         </TableCell>
-                        <TableCell className="hidden text-muted-foreground lg:table-cell">{formatDate(u.lastLoginAt)}</TableCell>
+                        <TableCell className="hidden text-muted-foreground lg:table-cell">{fmt.date(u.lastLoginAt)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

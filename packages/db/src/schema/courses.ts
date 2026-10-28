@@ -90,6 +90,8 @@ export const activityType = pgEnum("activity_type", [
   "interactive",
   "video",
   "certificate",
+  "lti",
+  "scorm",
 ]);
 
 export const completionRule = pgEnum("completion_rule", ["none", "manual", "view", "submit", "grade", "pass"]);

@@ -9,7 +9,7 @@ import { badRequest } from "../../core/errors";
 import { emit } from "../../core/events";
 import { capabilityMap } from "../../core/rbac";
 import { cleanHtml } from "../../core/sanitize";
-import { ok, zDate, zDateInput, zId, zNullableDate, zOk } from "../../core/schemas";
+import { ok, zDate, zDateInput, zId, zNullableDate, zOk, patchSchema } from "../../core/schemas";
 import { syncActivityGradeItem } from "../gradebook/service";
 import { loadCourseWith } from "../courses/service";
 import { loadActivity, nextActivityPosition, sectionInCourse } from "./service";
@@ -26,6 +26,8 @@ const TYPES = [
   "interactive",
   "video",
   "certificate",
+  "lti",
+  "scorm",
 ] as const satisfies readonly ActivityType[];
 
 const zActivity = z.object({
@@ -86,6 +88,9 @@ const activityCaps = [
   "video:join",
   "video:moderate",
   "completion:override",
+  "lti:launch",
+  "scorm:attempt",
+  "scorm:view_reports",
 ] as const;
 
 export const routes: FastifyPluginAsyncZod = async (app) => {
@@ -108,8 +113,8 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["Activities"],
         summary: "Add an activity. `settings` is validated by the activity type.",
         params: z.object({ courseId: zId }),
-        body: zCommon.extend({ type: z.enum(TYPES), settings: z.record(z.unknown()).default({}) }),
-        response: { 201: zActivity.extend({ settings: z.record(z.unknown()).nullable() }) },
+        body: zCommon.extend({ type: z.enum(TYPES), settings: z.record(z.string(), z.unknown()).default({}) }),
+        response: { 201: zActivity.extend({ settings: z.record(z.string(), z.unknown()).nullable() }) },
       },
     },
     async (req, reply) => {
@@ -156,8 +161,8 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         params: z.object({ id: zId }),
         response: {
           200: zActivity.extend({
-            settings: z.record(z.unknown()).nullable(),
-            capabilities: z.record(z.boolean()),
+            settings: z.record(z.string(), z.unknown()).nullable(),
+            capabilities: z.record(z.string(), z.boolean()),
             completion: z.string().nullable(),
             course: z.object({ id: zId, fullname: z.string() }),
           }),
@@ -193,8 +198,8 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["Activities"],
         summary: "Update an activity and/or its type settings",
         params: z.object({ id: zId }),
-        body: zCommon.partial().extend({ settings: z.record(z.unknown()).optional() }),
-        response: { 200: zActivity.extend({ settings: z.record(z.unknown()).nullable() }) },
+        body: patchSchema(zCommon).extend({ settings: z.record(z.string(), z.unknown()).optional() }),
+        response: { 200: zActivity.extend({ settings: z.record(z.string(), z.unknown()).nullable() }) },
       },
     },
     async (req) => {
@@ -209,7 +214,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           ? await tx.update(activities).set(patch).where(eq(activities.id, activity.id)).returning()
           : [activity];
         if (settings) {
-          const parsed = handler.settings.partial().safeParse(settings);
+          const parsed = patchSchema(handler.settings).safeParse(settings);
           if (!parsed.success) throw badRequest("Invalid activity settings", parsed.error.flatten());
           await handler.update(tx, { organizationId: req.org.id, userId: me.id, activity: updated! }, parsed.data);
         }

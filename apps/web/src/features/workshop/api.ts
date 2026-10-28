@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import type { Translate } from "@/lib/i18n";
 
 export const PHASES = ["setup", "submission", "assessment", "evaluation", "closed"] as const;
 export type Phase = (typeof PHASES)[number];
@@ -12,6 +13,7 @@ export const PHASE_LABELS: Record<Phase, string> = {
   evaluation: "Evaluation",
   closed: "Closed",
 };
+export const phaseLabel = (t: Translate, p: Phase) => t(`workshop.phase.${p}`, PHASE_LABELS[p]);
 
 export type Criterion = { id: string; description: string; maxScore: number; weight: number };
 export type Person = { id: string; firstName: string; lastName: string };

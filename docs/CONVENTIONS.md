@@ -36,9 +36,12 @@ packages/rbac       capability catalogue + permission resolution (pure, unit-tes
    - `loadActivity(tx, req, activityId, { type, capability })` (modules/activities/service). Returns `{ activity, course, canEdit }` and enforces visibility and availability.
    Missing **or forbidden** resources return 404 (`must()` / `notFound()`), so their existence isn't revealed.
    Always check **ownership** for per-user data (IDOR): a student can only read their own submissions/attempts unless they hold the grader capability.
-4. **Events.** After the transaction commits, `await emit("event.name", payload)` (core/events).
-   Subscribe in your module's `setup()` with `on("event.name", async (tx, p) => …)`. Handlers get their own tenant transaction.
-   Never emit inside `req.tenant(...)`.
+4. **Events** (core/events, transactional outbox, at-least-once):
+   - Preferred: `await emitInTx(tx, "event.name", payload)` inside `req.tenant(...)`. The event commits atomically with the change and the worker dispatches it (within ~2s).
+   - Or, after the transaction commits, `await emit("event.name", payload)`, which persists the event and dispatches it immediately. Never call `emit` inside a transaction.
+   - Subscribe in `setup()` with `on("event.name", async (tx, p) => …, { id: "module.purpose" })`. Each handler runs in its own tenant transaction and is retried independently, so it **must be idempotent** (upserts, "already done?" checks). Inside a handler, emit follow-ups with `emitInTx(tx, …)`.
+   - New event types go in `EventMap` in core/events.ts.
+4b. **Background work** (core/jobs, durable Postgres queue): `defineJob("module.task", async (payload, ctx) => …)` at module load, then `await enqueueJob(tx, "module.task", payload, { tenantId, runAt?, uniqueKey? })`. Pass `tx` so the job only exists if the change commits. Payloads are JSON and handlers must be idempotent. Emails: `queueMail(tx, tenantId, { to, subject, text })` (core/mail). The old closure-based `enqueue()` is deprecated: it loses work on restart.
 5. **Grades.** Gradable activity types implement `grading()` in their `ActivityTypeHandler`. To record a learner's grade, call
    `pushGrade(tx, {...})` from `modules/gradebook/service` and **emit the returned payload** as `grade.updated` after commit.
 6. **Activity types.** Register in `setup()` via `registerActivityType({ type, label, settings: z.object(...), create, update, load, grading? })`.
@@ -67,4 +70,7 @@ packages/rbac       capability catalogue + permission resolution (pure, unit-tes
 - Shared helpers in `@/components/common`: `PageHeader`, `QueryState`, `EmptyState`, `ErrorAlert`, `HtmlContent`, `formatDate`, `fullName`. Use `FileInput`/`MultiFileInput` for uploads and `toast` from `sonner` for feedback.
 - Show actions based on capabilities returned by the API (`activity.capabilities`, `course.capabilities`, `useSession().can()`). The server always re-checks.
 - Activity UIs implement `ActivityTypeUI` (`features/activities/types.ts`) in `features/<type>/index.tsx`: `View` (the learner/teacher page body) and `SettingsFields` (controlled form for `settings`).
+- **i18n**: user-facing strings go through `const t = useT()` from `@/lib/i18n`, written as `t("area.key", "English text", { vars })`. Add the Spanish translation to `src/i18n/es.json` (`en.json` stays empty, since the inline English is the source). Format dates and numbers with `useFormat()`.
+- **Links styled as buttons**: use `<Link className={buttonVariants({ variant })}>` (link semantics). Keep `<Button>` for actions.
+- **Rich text**: use `<RichTextEditor value onChange />` from `@/components/rich-text-editor` for any user-authored HTML (descriptions, posts, feedback). The server sanitizes it.
 - Mobile-first: layouts must work at 360px wide. Use semantic HTML, labels, `aria-label` on icon buttons, and keyboard-accessible controls.

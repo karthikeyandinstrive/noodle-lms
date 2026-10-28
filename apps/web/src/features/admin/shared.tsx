@@ -1,13 +1,14 @@
 "use client";
 
 import { ChevronLeft, ChevronRight, ShieldAlert } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useT } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -38,19 +39,20 @@ export function useDebounced<T>(value: T, ms = 300) {
 
 /** Previous/next pager for `paged()` API responses. */
 export function Pager({ page, pageSize, total, onPage }: { page: number; pageSize: number; total: number; onPage: (page: number) => void }) {
+  const t = useT();
   const pages = Math.max(1, Math.ceil(total / pageSize));
-  if (total <= pageSize && page === 1) return <p className="mt-3 text-xs text-muted-foreground">{total} total</p>;
+  if (total <= pageSize && page === 1) return <p className="mt-3 text-xs text-muted-foreground">{t("admin.shared.total", "{total} total", { total })}</p>;
   return (
-    <nav className="mt-4 flex items-center justify-between gap-2" aria-label="Pagination">
-      <p className="text-xs text-muted-foreground">
-        Page {page} of {pages} · {total} total
+    <nav className="mt-4 flex items-center justify-between gap-2" aria-label={t("admin.shared.pagination", "Pagination")}>
+      <p className="text-xs text-muted-foreground" aria-live="polite">
+        {t("admin.shared.pageOf", "Page {page} of {pages} · {total} total", { page, pages, total })}
       </p>
       <div className="flex gap-1">
-        <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)} aria-label="Previous page">
-          <ChevronLeft /> <span className="hidden sm:inline">Previous</span>
+        <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)} aria-label={t("admin.shared.previousPage", "Previous page")}>
+          <ChevronLeft aria-hidden /> <span className="hidden sm:inline">{t("common.previous", "Previous")}</span>
         </Button>
-        <Button variant="outline" size="sm" disabled={page >= pages} onClick={() => onPage(page + 1)} aria-label="Next page">
-          <span className="hidden sm:inline">Next</span> <ChevronRight />
+        <Button variant="outline" size="sm" disabled={page >= pages} onClick={() => onPage(page + 1)} aria-label={t("admin.shared.nextPage", "Next page")}>
+          <span className="hidden sm:inline">{t("common.next", "Next")}</span> <ChevronRight aria-hidden />
         </Button>
       </div>
     </nav>
@@ -59,15 +61,16 @@ export function Pager({ page, pageSize, total, onPage }: { page: number; pageSiz
 
 /** Renders children only when the current user has the site-level capability. The API re-checks. */
 export function RequireCapability({ capability, children }: { capability: string | string[]; children: React.ReactNode }) {
+  const t = useT();
   const session = useSession();
   if (session.isPending) return <Skeleton className="h-32 w-full" />;
   const caps = Array.isArray(capability) ? capability : [capability];
   if (!caps.some((c) => session.can(c))) {
     return (
       <Alert>
-        <ShieldAlert />
-        <AlertTitle>Not available</AlertTitle>
-        <AlertDescription>You don&apos;t have permission to view this page.</AlertDescription>
+        <ShieldAlert aria-hidden />
+        <AlertTitle>{t("admin.shared.notAvailable", "Not available")}</AlertTitle>
+        <AlertDescription>{t("admin.shared.noPermission", "You don't have permission to view this page.")}</AlertDescription>
       </Alert>
     );
   }
@@ -89,7 +92,9 @@ type ConfirmProps = {
 };
 
 /** Body is mounted only while open, so the typed confirmation resets each time. */
-function ConfirmBody({ onOpenChange, confirmLabel = "Confirm", destructive, confirmText, pending, onConfirm, children }: Omit<ConfirmProps, "open" | "title" | "description">) {
+function ConfirmBody({ onOpenChange, confirmLabel, destructive, confirmText, pending, onConfirm, children }: Omit<ConfirmProps, "open" | "title" | "description">) {
+  const t = useT();
+  const id = useId();
   const [typed, setTyped] = useState("");
   const blocked = !!confirmText && typed !== confirmText;
   return (
@@ -102,26 +107,31 @@ function ConfirmBody({ onOpenChange, confirmLabel = "Confirm", destructive, conf
     >
       {children}
       {confirmText && (
-        <Field
-          id="confirm-text"
-          label={
-            <span>
-              Type <strong className="font-mono">{confirmText}</strong> to confirm
-            </span>
-          }
-        >
-          <Input id="confirm-text" autoComplete="off" value={typed} onChange={(e) => setTyped(e.target.value)} />
+        <Field id={id} label={<ConfirmTextLabel text={confirmText} template={t("admin.shared.typeToConfirm", "Type {text} to confirm")} />}>
+          <Input id={id} autoComplete="off" value={typed} onChange={(e) => setTyped(e.target.value)} />
         </Field>
       )}
       <DialogFooter>
         <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
+          {t("common.cancel", "Cancel")}
         </Button>
         <Button type="submit" variant={destructive ? "destructive" : "default"} disabled={blocked || pending}>
-          {pending ? "Working…" : confirmLabel}
+          {pending ? t("admin.shared.working", "Working…") : (confirmLabel ?? t("admin.shared.confirm", "Confirm"))}
         </Button>
       </DialogFooter>
     </form>
+  );
+}
+
+/** Renders a translated "Type {text} to confirm" template with the text in bold monospace. */
+function ConfirmTextLabel({ text, template }: { text: string; template: string }) {
+  const [before, after = ""] = template.split("{text}");
+  return (
+    <span>
+      {before}
+      <strong className="font-mono">{text}</strong>
+      {after}
+    </span>
   );
 }
 

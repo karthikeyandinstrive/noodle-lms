@@ -1,12 +1,13 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Clock, Flag, Save } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Clock, Flag, Save } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ErrorAlert, QueryState, formatDate } from "@/components/common";
+import { ErrorAlert, QueryState, fullName } from "@/components/common";
+import { RichTextEditor } from "@/components/rich-text-editor";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,18 +19,20 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { ApiError, api, errorMessage } from "@/lib/api";
+import { useFormat, useLocale, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { htmlToPlain } from "../assignment/text";
 import { formatDuration, quizKeys, round, useAttempt, type AttemptDetail, type AttemptQuestion, type Response } from "./api";
 import { QuestionCard, isAnswered } from "./question-input";
 
 const AUTOSAVE_MS = 2500;
+
+/** Remaining-time thresholds (seconds) at which the countdown is announced to screen readers. */
+const TIMER_MILESTONES = [30, 60, 300, 600];
 
 export function QuizAttemptPage() {
   const { activityId, attemptId } = useParams<{ activityId: string; attemptId: string }>();
@@ -41,7 +44,7 @@ export function QuizAttemptPage() {
       {d && (
         <div className="space-y-4">
           <Link href={`/activities/${activityId}`} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-            <ChevronLeft className="size-4" /> {d.quiz.name}
+            <ChevronLeft aria-hidden className="size-4" /> {d.quiz.name}
           </Link>
           {d.attempt.status === "in_progress" && d.isOwner ? (
             <AttemptRunner key={d.attempt.id} data={d} activityId={activityId} />
@@ -58,6 +61,8 @@ export function QuizAttemptPage() {
 
 function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: string }) {
   const qc = useQueryClient();
+  const t = useT();
+  const locale = useLocale();
   const attemptId = data.attempt.id;
   const [responses, setResponses] = useState<Record<string, Response>>(() => Object.fromEntries(data.questions.map((x) => [x.slotId, x.response])));
   const [page, setPage] = useState(0);
@@ -99,13 +104,13 @@ function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: 
         toast.error(err.message);
         await reload();
       } else {
-        toast.error(`Could not save: ${errorMessage(err)}`);
+        toast.error(t("quiz.attempt.saveFailed", "Could not save: {error}", { error: errorMessage(err) }));
       }
       return false;
     } finally {
       setSaving(false);
     }
-  }, [activityId, attemptId, reload]);
+  }, [activityId, attemptId, reload, t]);
 
   const finish = useCallback(
     async (auto = false) => {
@@ -117,7 +122,9 @@ function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: 
           body: { responses: ids.map((slotId) => ({ slotId, response: responsesRef.current[slotId] ?? null })) },
         });
         dirty.current.clear();
-        toast.success(auto ? "Time is up — your attempt was submitted" : "Attempt submitted");
+        toast.success(
+          auto ? t("quiz.attempt.timeUpSubmitted", "Time is up — your attempt was submitted") : t("quiz.attempt.submitted", "Attempt submitted"),
+        );
       } catch (err) {
         toast.error(errorMessage(err));
       } finally {
@@ -126,14 +133,14 @@ function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: 
         await reload();
       }
     },
-    [activityId, attemptId, reload],
+    [activityId, attemptId, reload, t],
   );
 
   // Debounced autosave.
   useEffect(() => {
     if (!dirty.current.size) return;
-    const t = setTimeout(() => void save(), AUTOSAVE_MS);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => void save(), AUTOSAVE_MS);
+    return () => clearTimeout(timer);
   }, [responses, save]);
 
   // Countdown; submits automatically at zero.
@@ -149,8 +156,8 @@ function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: 
       }
     };
     tick();
-    const t = setInterval(tick, 1000);
-    return () => clearInterval(t);
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
   }, [dueAt, offset, finish]);
 
   // Warn before leaving with unsaved answers.
@@ -165,6 +172,16 @@ function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: 
   const questions = data.questions;
   const current = questions[page]!;
   const unanswered = questions.filter((x) => !isAnswered(responses[x.slotId] ?? null)).length;
+  // Announce the countdown only when it crosses a milestone (10, 5, 1 min, 30 s), not every second.
+  const milestone = remaining === null ? null : (TIMER_MILESTONES.find((m) => remaining <= m) ?? null);
+  const timerAnnouncement =
+    milestone === null
+      ? ""
+      : milestone < 60
+        ? t("quiz.attempt.secondsLeft", "{count} seconds left", { count: milestone })
+        : milestone === 60
+          ? t("quiz.attempt.oneMinuteLeft", "1 minute left")
+          : t("quiz.attempt.minutesLeft", "{count} minutes left", { count: milestone / 60 });
   const go = (i: number) => {
     void save();
     setPage(i);
@@ -179,19 +196,19 @@ function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_240px]">
       <div className="order-2 space-y-4 lg:order-1">
-        {data.attempt.preview && <Badge variant="outline">Preview — not graded</Badge>}
+        {data.attempt.preview && <Badge variant="outline">{t("quiz.attempt.previewNotGraded", "Preview — not graded")}</Badge>}
         <QuestionCard question={current} value={responses[current.slotId] ?? null} onChange={(r) => setResponse(current.slotId, r)} />
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Button variant="outline" disabled={page === 0} onClick={() => go(page - 1)}>
-            <ChevronLeft /> Previous
+            <ChevronLeft aria-hidden /> {t("common.previous", "Previous")}
           </Button>
           {page < questions.length - 1 ? (
             <Button onClick={() => go(page + 1)}>
-              Next <ChevronRight />
+              {t("common.next", "Next")} <ChevronRight aria-hidden />
             </Button>
           ) : (
             <Button onClick={() => void save().then(() => setConfirm(true))}>
-              <Flag /> Finish attempt…
+              <Flag aria-hidden /> {t("quiz.attempt.finish", "Finish attempt…")}
             </Button>
           )}
         </div>
@@ -201,45 +218,69 @@ function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: 
         <Card className="lg:sticky lg:top-4">
           <CardContent className="space-y-4 pt-6">
             {remaining !== null && (
-              <div
-                className={cn(
-                  "flex items-center gap-2 rounded-lg border p-2 font-mono text-lg tabular-nums",
-                  remaining < 60 && "border-destructive text-destructive",
-                )}
-                role="timer"
-                aria-live={remaining < 60 ? "assertive" : "off"}
-                aria-label={`Time left ${formatDuration(remaining)}`}
-              >
-                <Clock className="size-4" /> {formatDuration(remaining)}
-              </div>
+              <>
+                {/* The visible clock is not live (role=timer is aria-live=off); milestones are announced below. */}
+                <div
+                  className={cn(
+                    "flex items-center gap-2 rounded-lg border p-2 font-mono text-lg tabular-nums",
+                    remaining < 60 && "border-destructive text-destructive",
+                  )}
+                  role="timer"
+                  aria-labelledby="quiz-time-left"
+                >
+                  <Clock aria-hidden className="size-4" />
+                  <span id="quiz-time-left" className="sr-only">
+                    {t("quiz.attempt.timeLeft", "Time left")}
+                  </span>
+                  {formatDuration(remaining)}
+                </div>
+                <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                  {timerAnnouncement}
+                </p>
+              </>
             )}
-            <nav aria-label="Questions">
+            <nav aria-label={t("quiz.attempt.questionNav", "Questions")}>
               <ol className="grid grid-cols-6 gap-1.5 sm:grid-cols-10 lg:grid-cols-5">
-                {questions.map((x, i) => (
-                  <li key={x.slotId}>
-                    <button
-                      type="button"
-                      onClick={() => go(i)}
-                      aria-current={i === page ? "step" : undefined}
-                      aria-label={`Question ${x.number}${isAnswered(responses[x.slotId] ?? null) ? ", answered" : ""}`}
-                      className={cn(
-                        "flex size-9 items-center justify-center rounded-md border text-sm",
-                        isAnswered(responses[x.slotId] ?? null) && "bg-muted",
-                        i === page && "border-primary ring-2 ring-primary/40",
-                      )}
-                    >
-                      {x.number}
-                    </button>
-                  </li>
-                ))}
+                {questions.map((x, i) => {
+                  const answered = isAnswered(responses[x.slotId] ?? null);
+                  return (
+                    <li key={x.slotId}>
+                      <button
+                        type="button"
+                        onClick={() => go(i)}
+                        aria-current={i === page ? "step" : undefined}
+                        aria-label={
+                          answered
+                            ? t("quiz.attempt.navAnswered", "Question {number}, answered", { number: x.number })
+                            : t("quiz.attempt.navUnanswered", "Question {number}, not answered", { number: x.number })
+                        }
+                        className={cn(
+                          "relative flex size-9 items-center justify-center rounded-md border text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                          answered && "bg-muted",
+                          i === page && "border-primary font-semibold ring-2 ring-primary/40",
+                        )}
+                      >
+                        {x.number}
+                        {answered && <Check aria-hidden className="absolute top-0.5 right-0.5 size-2.5 text-muted-foreground" />}
+                      </button>
+                    </li>
+                  );
+                })}
               </ol>
             </nav>
+            <p className="text-xs text-muted-foreground">
+              {t("quiz.attempt.answeredCount", "{answered} of {total} answered", { answered: questions.length - unanswered, total: questions.length })}
+            </p>
             <p className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Save className="size-3" />
-              {saving ? "Saving…" : lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : "Answers save automatically"}
+              <Save aria-hidden className="size-3" />
+              {saving
+                ? t("common.saving", "Saving…")
+                : lastSaved
+                  ? t("quiz.attempt.savedAt", "Saved {time}", { time: lastSaved.toLocaleTimeString(locale) })
+                  : t("quiz.attempt.autosave", "Answers save automatically")}
             </p>
             <Button className="w-full" variant="secondary" onClick={() => void save().then(() => setConfirm(true))}>
-              Finish attempt…
+              {t("quiz.attempt.finish", "Finish attempt…")}
             </Button>
           </CardContent>
         </Card>
@@ -248,16 +289,20 @@ function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: 
       <AlertDialog open={confirm} onOpenChange={setConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Submit all and finish?</AlertDialogTitle>
+            <AlertDialogTitle>{t("quiz.attempt.confirmTitle", "Submit all and finish?")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {unanswered ? `${unanswered} question${unanswered > 1 ? "s are" : " is"} not answered. ` : "All questions are answered. "}
-              You will not be able to change your answers after submitting.
+              {unanswered === 0
+                ? t("quiz.attempt.allAnswered", "All questions are answered.")
+                : unanswered === 1
+                  ? t("quiz.attempt.unanswered.one", "{count} question is not answered.", { count: unanswered })
+                  : t("quiz.attempt.unanswered.other", "{count} questions are not answered.", { count: unanswered })}{" "}
+              {t("quiz.attempt.noChangesAfter", "You will not be able to change your answers after submitting.")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Return to attempt</AlertDialogCancel>
+            <AlertDialogCancel>{t("quiz.attempt.return", "Return to attempt")}</AlertDialogCancel>
             <AlertDialogAction disabled={finishing} onClick={() => void finish()}>
-              {finishing ? "Submitting…" : "Submit all and finish"}
+              {finishing ? t("quiz.attempt.submitting", "Submitting…") : t("quiz.attempt.submitAll", "Submit all and finish")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -271,31 +316,31 @@ function AttemptRunner({ data, activityId }: { data: AttemptDetail; activityId: 
 function AttemptReview({ data, activityId }: { data: AttemptDetail; activityId: string }) {
   const a = data.attempt;
   const finished = a.status === "finished";
+  const t = useT();
+  const fmt = useFormat();
   return (
     <div className="space-y-4">
       <Card>
         <CardContent className="grid gap-3 pt-6 text-sm sm:grid-cols-2 lg:grid-cols-4">
           {!data.isOwner && (
             <div>
-              <div className="text-xs text-muted-foreground">Student</div>
-              <div className="font-medium">
-                {data.user.firstName} {data.user.lastName}
-              </div>
+              <div className="text-xs text-muted-foreground">{t("quiz.student", "Student")}</div>
+              <div className="font-medium">{fullName(data.user)}</div>
             </div>
           )}
           <div>
-            <div className="text-xs text-muted-foreground">Attempt</div>
-            <div className="font-medium">{a.preview ? "Preview" : a.attempt}</div>
+            <div className="text-xs text-muted-foreground">{t("quiz.attempt", "Attempt")}</div>
+            <div className="font-medium">{a.preview ? t("quiz.preview", "Preview") : a.attempt}</div>
           </div>
           <div>
-            <div className="text-xs text-muted-foreground">Started / finished</div>
+            <div className="text-xs text-muted-foreground">{t("quiz.review.startedFinished", "Started / finished")}</div>
             <div className="font-medium">
-              {formatDate(a.startedAt)} / {finished ? formatDate(a.finishedAt) : "in progress"}
+              {fmt.date(a.startedAt)} / {finished ? fmt.date(a.finishedAt) : t("quiz.review.inProgressLower", "in progress")}
             </div>
           </div>
           {a.sumMarks !== undefined && (
             <div>
-              <div className="text-xs text-muted-foreground">Marks</div>
+              <div className="text-xs text-muted-foreground">{t("quiz.review.marks", "Marks")}</div>
               <div className="font-medium">
                 {round(a.sumMarks)} / {round(a.totalMarks)}
               </div>
@@ -303,30 +348,35 @@ function AttemptReview({ data, activityId }: { data: AttemptDetail; activityId: 
           )}
           {a.grade !== undefined && (
             <div>
-              <div className="text-xs text-muted-foreground">Grade</div>
-              <div className="font-medium">{a.needsGrading ? "Not yet graded" : `${round(a.grade)} / ${a.gradeMax}`}</div>
+              <div className="text-xs text-muted-foreground">{t("quiz.grade", "Grade")}</div>
+              <div className="font-medium">{a.needsGrading ? t("quiz.notYetGraded", "Not yet graded") : `${round(a.grade)} / ${a.gradeMax}`}</div>
             </div>
           )}
         </CardContent>
       </Card>
-      {!finished && <p className="text-sm text-muted-foreground">This attempt is still in progress; responses shown are the last saved.</p>}
+      {!finished && (
+        <p className="text-sm text-muted-foreground">
+          {t("quiz.review.stillInProgress", "This attempt is still in progress; responses shown are the last saved.")}
+        </p>
+      )}
       {data.questions.map((x) => (
         <QuestionCard key={x.slotId} question={x} value={x.response} onChange={() => {}} readOnly>
           {data.canGrade && finished && !a.preview && <ManualGrade activityId={activityId} attemptId={a.id} question={x} />}
         </QuestionCard>
       ))}
-      <Button variant="outline" render={<Link href={`/activities/${activityId}`} />}>
-        Back to the quiz
-      </Button>
+      <Link href={`/activities/${activityId}`} className={buttonVariants({ variant: "outline" })}>
+        {t("quiz.review.backToQuiz", "Back to the quiz")}
+      </Link>
     </div>
   );
 }
 
 function ManualGrade({ activityId, attemptId, question }: { activityId: string; attemptId: string; question: AttemptQuestion }) {
   const qc = useQueryClient();
+  const t = useT();
   const [open, setOpen] = useState(question.state === "needs_grading");
   const [mark, setMark] = useState(question.mark != null ? String(question.mark) : "");
-  const [comment, setComment] = useState(() => htmlToPlain(question.comment));
+  const [comment, setComment] = useState(question.comment ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const n = Number(mark);
@@ -335,7 +385,7 @@ function ManualGrade({ activityId, attemptId, question }: { activityId: string; 
   if (!open) {
     return (
       <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        Override mark / comment
+        {t("quiz.grade.override", "Override mark / comment")}
       </Button>
     );
   }
@@ -348,8 +398,8 @@ function ManualGrade({ activityId, attemptId, question }: { activityId: string; 
         setPending(true);
         setError(null);
         try {
-          await api(`/quizzes/${activityId}/attempts/${attemptId}/slots/${question.slotId}/grade`, { body: { mark: n, comment: comment.trim() || null } });
-          toast.success("Mark saved");
+          await api(`/quizzes/${activityId}/attempts/${attemptId}/slots/${question.slotId}/grade`, { body: { mark: n, comment: comment || null } });
+          toast.success(t("quiz.grade.saved", "Mark saved"));
           await qc.invalidateQueries({ queryKey: ["quiz", activityId] });
         } catch (err) {
           setError(err);
@@ -360,7 +410,7 @@ function ManualGrade({ activityId, attemptId, question }: { activityId: string; 
     >
       <div className="grid gap-3 sm:grid-cols-[140px_1fr]">
         <div className="space-y-1.5">
-          <Label htmlFor={`mark-${question.slotId}`}>Mark (max {question.maxMark})</Label>
+          <Label htmlFor={`mark-${question.slotId}`}>{t("quiz.grade.markMax", "Mark (max {max})", { max: question.maxMark })}</Label>
           <Input
             id={`mark-${question.slotId}`}
             type="number"
@@ -373,13 +423,13 @@ function ManualGrade({ activityId, attemptId, question }: { activityId: string; 
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor={`comment-${question.slotId}`}>Comment</Label>
-          <Textarea id={`comment-${question.slotId}`} rows={2} value={comment} onChange={(e) => setComment(e.target.value)} />
+          <Label htmlFor={`comment-${question.slotId}`}>{t("quiz.grade.comment", "Comment")}</Label>
+          <RichTextEditor id={`comment-${question.slotId}`} minHeight={80} value={comment} onChange={setComment} />
         </div>
       </div>
       {error ? <ErrorAlert error={error} /> : null}
       <Button type="submit" size="sm" disabled={pending || invalid}>
-        {pending ? "Saving…" : "Save mark"}
+        {pending ? t("common.saving", "Saving…") : t("quiz.grade.save", "Save mark")}
       </Button>
     </form>
   );

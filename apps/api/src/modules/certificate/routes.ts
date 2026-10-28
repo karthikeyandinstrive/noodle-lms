@@ -18,12 +18,13 @@ import { z } from "zod";
 import { audit } from "../../core/audit";
 import { requireUser } from "../../core/auth";
 import { badRequest, conflict, forbidden, must, notFound } from "../../core/errors";
-import { emit } from "../../core/events";
+import { emitInTx } from "../../core/events";
 import { downloadUrl } from "../../core/files";
 import { hasCapability, requireCapability } from "../../core/rbac";
-import { ok, zDate, zId, zNullableDate, zOk, zUserSummary } from "../../core/schemas";
+import { ok, zDate, zId, zNullableDate, zOk, zUserSummary, patchSchema } from "../../core/schemas";
 import { loadActivity } from "../activities/service";
 import { isEnrolled } from "../courses/service";
+import { CERTIFICATE_FONTS, certificateFont } from "./pdf";
 import {
   attachTemplateFiles,
   certActivityOf,
@@ -41,7 +42,7 @@ const zTemplate = z.object({
   name: z.string(),
   orientation: z.enum(["landscape", "portrait"]),
   backgroundFileId: zId.nullable(),
-  elements: z.array(z.record(z.unknown())),
+  elements: z.array(z.record(z.string(), z.unknown())),
   createdAt: zDate,
 });
 
@@ -151,7 +152,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
   app.patch(
     "/templates/:id",
     {
-      schema: { tags: ["Certificates"], summary: "Update a certificate template", params: z.object({ id: zId }), body: zTemplateInput.partial(), response: { 200: zTemplate } },
+      schema: { tags: ["Certificates"], summary: "Update a certificate template", params: z.object({ id: zId }), body: patchSchema(zTemplateInput), response: { 200: zTemplate } },
     },
     (req) =>
       req.tenant(async (tx) => {
@@ -211,6 +212,26 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         .header("Content-Disposition", 'inline; filename="certificate-preview.pdf"')
         .type("application/pdf")
         .send(pdf);
+    },
+  );
+
+  app.get(
+    "/fonts/:file",
+    {
+      config: { tenant: false, rateLimit: { max: 120, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["Certificates"],
+        summary: "The fonts certificates are rendered with (DejaVu Sans), for the template designer preview",
+        params: z.object({ file: z.enum([CERTIFICATE_FONTS.regular, CERTIFICATE_FONTS.bold]) }),
+      },
+    },
+    async (req, reply) => {
+      const bytes = await certificateFont(req.params.file);
+      return reply
+        .header("Cache-Control", "public, max-age=31536000, immutable")
+        .header("Cross-Origin-Resource-Policy", "same-site")
+        .type("font/ttf")
+        .send(Buffer.from(bytes));
     },
   );
 
@@ -345,22 +366,29 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           .limit(1);
         if (existing) {
           if (existing.revokedAt) throw forbidden("This certificate was revoked. Contact your teacher.");
-          return { row: existing, isNew: false, activity };
+          return { row: existing };
         }
         const elig = await checkEligibility(tx, cert, course.id, me.id);
         if (!elig.eligible) throw badRequest(elig.reasons.join(" ") || "You are not eligible yet");
         const row = await issueCertificate(tx, { activity, cert, userId: me.id, organizationName: req.org.name });
-        return { row: row!, isNew: true, activity };
-      });
-      if (out.isNew) {
-        await emit("certificate.issued", {
+        if (!row) {
+          // Issued concurrently (e.g. by the auto-issue job): return that one.
+          const [now] = await tx
+            .select()
+            .from(issuedCertificates)
+            .where(and(eq(issuedCertificates.certificateActivityId, cert.id), eq(issuedCertificates.userId, me.id)))
+            .limit(1);
+          return { row: must(now, "Certificate") };
+        }
+        await emitInTx(tx, "certificate.issued", {
           organizationId: req.org.id,
-          courseId: out.activity.courseId,
-          activityId: out.activity.id,
+          courseId: activity.courseId,
+          activityId: activity.id,
           userId: me.id,
-          issuedCertificateId: out.row.id,
+          issuedCertificateId: row.id,
         });
-      }
+        return { row };
+      });
       return toIssued(out.row);
     },
   );
@@ -386,16 +414,16 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         const row = await issueCertificate(tx, { activity, cert, userId: req.params.userId, organizationName: req.org.name, reinstate: true });
         if (!row) throw conflict("A certificate was already issued to this user");
         await audit(tx, req, "certificate.issued_manually", { type: "issued_certificate", id: row.id }, { userId: req.params.userId, activityId: activity.id });
-        return { row, activity };
+        await emitInTx(tx, "certificate.issued", {
+          organizationId: req.org.id,
+          courseId: activity.courseId,
+          activityId: activity.id,
+          userId: req.params.userId,
+          issuedCertificateId: row.id,
+        });
+        return row;
       });
-      await emit("certificate.issued", {
-        organizationId: req.org.id,
-        courseId: out.activity.courseId,
-        activityId: out.activity.id,
-        userId: req.params.userId,
-        issuedCertificateId: out.row.id,
-      });
-      return toIssued(out.row);
+      return toIssued(out);
     },
   );
 

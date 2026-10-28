@@ -24,11 +24,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState, HtmlContent, QueryState, fullName } from "@/components/common";
 import { api, errorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { FileList } from "./submission";
 import {
-  PHASE_LABELS,
   PHASES,
   fmt,
+  phaseLabel,
   useAllocations,
   useSubmissionDetail,
   useWorkshopGrades,
@@ -40,22 +41,28 @@ import {
 const selectClass = "h-8 rounded-lg border bg-background px-2 text-sm";
 
 export function ManagerPanel({ activityId, w }: { activityId: string; w: WorkshopOverview }) {
+  const t = useT();
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Manage workshop</CardTitle>
+        <CardTitle>{t("workshop.manage", "Manage workshop")}</CardTitle>
         {w.stats && (
           <CardDescription>
-            {w.stats.submissions} of {w.stats.participants} submitted · {w.stats.assessed} of {w.stats.allocations} assessments done
+            {t("workshop.statsLine", "{submitted} of {participants} submitted · {assessed} of {allocations} assessments done", {
+              submitted: w.stats.submissions,
+              participants: w.stats.participants,
+              assessed: w.stats.assessed,
+              allocations: w.stats.allocations,
+            })}
           </CardDescription>
         )}
       </CardHeader>
       <CardContent>
         <Tabs defaultValue="phase">
           <TabsList className="w-full sm:w-fit">
-            <TabsTrigger value="phase">Phase</TabsTrigger>
-            <TabsTrigger value="allocation">Allocation</TabsTrigger>
-            <TabsTrigger value="grades">Grades</TabsTrigger>
+            <TabsTrigger value="phase">{t("workshop.tabPhase", "Phase")}</TabsTrigger>
+            <TabsTrigger value="allocation">{t("workshop.tabAllocation", "Allocation")}</TabsTrigger>
+            <TabsTrigger value="grades">{t("workshop.tabGrades", "Grades")}</TabsTrigger>
           </TabsList>
           <TabsContent value="phase" className="pt-3">
             <PhaseControl activityId={activityId} phase={w.phase} />
@@ -74,13 +81,14 @@ export function ManagerPanel({ activityId, w }: { activityId: string; w: Worksho
 
 function PhaseControl({ activityId, phase }: { activityId: string; phase: Phase }) {
   const qc = useQueryClient();
+  const t = useT();
   const [target, setTarget] = useState<Phase | null>(null);
   const next = PHASES[PHASES.indexOf(phase) + 1];
   const change = useMutation({
     mutationFn: (p: Phase) => api(`/workshops/${activityId}/phase`, { method: "PUT", body: { phase: p } }),
     onSuccess: async () => {
       setTarget(null);
-      toast.success("Phase switched; participants were notified");
+      toast.success(t("workshop.phaseSwitched", "Phase switched; participants were notified"));
       await qc.invalidateQueries({ queryKey: workshopKeys.all(activityId) });
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -89,12 +97,12 @@ function PhaseControl({ activityId, phase }: { activityId: string; phase: Phase 
   return (
     <div className="space-y-3">
       <p className="text-sm">
-        Current phase: <strong>{PHASE_LABELS[phase]}</strong>
+        {t("workshop.currentPhase", "Current phase:")} <strong>{phaseLabel(t, phase)}</strong>
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        {next && <Button onClick={() => setTarget(next)}>Switch to {PHASE_LABELS[next].toLowerCase()} phase</Button>}
+        {next && <Button onClick={() => setTarget(next)}>{t("workshop.switchToPhase", "Switch to {phase} phase", { phase: phaseLabel(t, next).toLowerCase() })}</Button>}
         <Label htmlFor="ws-phase" className="sr-only">
-          Switch to phase
+          {t("workshop.switchToPhaseLabel", "Switch to phase")}
         </Label>
         <select
           id="ws-phase"
@@ -102,10 +110,10 @@ function PhaseControl({ activityId, phase }: { activityId: string; phase: Phase 
           value=""
           onChange={(e) => e.target.value && setTarget(e.target.value as Phase)}
         >
-          <option value="">Other phase…</option>
+          <option value="">{t("workshop.otherPhase", "Other phase…")}</option>
           {PHASES.filter((p) => p !== phase).map((p) => (
             <option key={p} value={p}>
-              {PHASE_LABELS[p]}
+              {phaseLabel(t, p)}
             </option>
           ))}
         </select>
@@ -113,13 +121,13 @@ function PhaseControl({ activityId, phase }: { activityId: string; phase: Phase 
       <AlertDialog open={!!target} onOpenChange={(o) => !o && setTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Switch to the {target ? PHASE_LABELS[target].toLowerCase() : ""} phase?</AlertDialogTitle>
-            <AlertDialogDescription>All participants will be notified of the change.</AlertDialogDescription>
+            <AlertDialogTitle>{t("workshop.confirmSwitchTitle", "Switch to the {phase} phase?", { phase: target ? phaseLabel(t, target).toLowerCase() : "" })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("workshop.confirmSwitchDesc", "All participants will be notified of the change.")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel", "Cancel")}</AlertDialogCancel>
             <Button disabled={change.isPending} onClick={() => target && change.mutate(target)}>
-              {change.isPending ? "Switching…" : "Switch phase"}
+              {change.isPending ? t("workshop.switching", "Switching…") : t("workshop.switchPhase", "Switch phase")}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -130,6 +138,7 @@ function PhaseControl({ activityId, phase }: { activityId: string; phase: Phase 
 
 function AllocationPanel({ activityId, w }: { activityId: string; w: WorkshopOverview }) {
   const qc = useQueryClient();
+  const t = useT();
   const query = useAllocations(activityId);
   const [replace, setReplace] = useState(false);
   const [includeNon, setIncludeNon] = useState(false);
@@ -140,7 +149,12 @@ function AllocationPanel({ activityId, w }: { activityId: string; w: WorkshopOve
   const random = useMutation({
     mutationFn: () => api<{ created: number; removed: number }>(`/workshops/${activityId}/allocations/random`, { body: { replace, includeNonSubmitters: includeNon } }),
     onSuccess: async (r) => {
-      toast.success(`${r.created} allocation${r.created === 1 ? "" : "s"} added${r.removed ? `, ${r.removed} removed` : ""}`);
+      toast.success(
+        (r.created === 1
+          ? t("workshop.allocationsAdded.one", "{n} allocation added", { n: r.created })
+          : t("workshop.allocationsAdded.other", "{n} allocations added", { n: r.created })) +
+          (r.removed ? `, ${t("workshop.allocationsRemoved", "{n} removed", { n: r.removed })}` : ""),
+      );
       await refresh();
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -166,27 +180,31 @@ function AllocationPanel({ activityId, w }: { activityId: string; w: WorkshopOve
           {canAllocate ? (
             <div className="space-y-2 rounded-lg border p-3">
               <p className="text-sm">
-                Randomly allocate {w.reviewsPerSubmission} reviewer{w.reviewsPerSubmission === 1 ? "" : "s"} per submission
-                {w.allowSelfAssessment ? " (self-assessment allowed)" : ""}.
+                {w.reviewsPerSubmission === 1
+                  ? t("workshop.randomAllocate.one", "Randomly allocate {n} reviewer per submission", { n: w.reviewsPerSubmission })
+                  : t("workshop.randomAllocate.other", "Randomly allocate {n} reviewers per submission", { n: w.reviewsPerSubmission })}
+                {w.allowSelfAssessment ? ` ${t("workshop.selfAllowed", "(self-assessment allowed)")}` : ""}.
               </p>
               <div className="flex flex-col gap-2 text-sm sm:flex-row sm:gap-4">
                 <label className="flex items-center gap-2">
-                  <Checkbox checked={replace} onCheckedChange={(v) => setReplace(!!v)} /> Remove unassessed allocations first
+                  <Checkbox checked={replace} onCheckedChange={(v) => setReplace(!!v)} /> {t("workshop.removeUnassessedFirst", "Remove unassessed allocations first")}
                 </label>
                 <label className="flex items-center gap-2">
-                  <Checkbox checked={includeNon} onCheckedChange={(v) => setIncludeNon(!!v)} /> Learners without a submission can review
+                  <Checkbox checked={includeNon} onCheckedChange={(v) => setIncludeNon(!!v)} /> {t("workshop.includeNonSubmitters", "Learners without a submission can review")}
                 </label>
               </div>
               <Button size="sm" disabled={random.isPending || !query.data.submissions.length} onClick={() => random.mutate()}>
-                <Shuffle /> {random.isPending ? "Allocating…" : "Allocate randomly"}
+                <Shuffle aria-hidden /> {random.isPending ? t("workshop.allocating", "Allocating…") : t("workshop.allocateRandomly", "Allocate randomly")}
               </Button>
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">Allocations can only change during the setup, submission and assessment phases.</p>
+            <p className="text-sm text-muted-foreground">
+              {t("workshop.allocationsLocked", "Allocations can only change during the setup, submission and assessment phases.")}
+            </p>
           )}
 
           {query.data.submissions.length === 0 ? (
-            <EmptyState title="No submissions yet" />
+            <EmptyState title={t("workshop.noSubmissionsYet", "No submissions yet")} />
           ) : (
             <ul className="divide-y rounded-lg border">
               {query.data.submissions.map((s) => {
@@ -196,24 +214,28 @@ function AllocationPanel({ activityId, w }: { activityId: string; w: WorkshopOve
                   <li key={s.id} className="space-y-2 p-3">
                     <div>
                       <p className="font-medium break-words">{s.title}</p>
-                      <p className="text-xs text-muted-foreground">by {fullName(s.author)}</p>
+                      <p className="text-xs text-muted-foreground">{t("workshop.byAuthor", "by {name}", { name: fullName(s.author) })}</p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                      {s.reviewers.length === 0 && <span className="text-xs text-muted-foreground">No reviewers</span>}
+                      {s.reviewers.length === 0 && <span className="text-xs text-muted-foreground">{t("workshop.noReviewers", "No reviewers")}</span>}
                       {s.reviewers.map((r) => (
                         <Badge key={r.assessmentId} variant={r.submittedAt ? "secondary" : "outline"} className="h-6 gap-1 pr-1">
                           {fullName(r.reviewer)}
-                          {r.submittedAt && <span className="text-muted-foreground">· {fmt(r.grade, 0)}%</span>}
+                          {r.submittedAt ? (
+                            <span className="text-muted-foreground">· {fmt(r.grade, 0)}%</span>
+                          ) : (
+                            <span className="sr-only">({t("workshop.notAssessedYet", "Not assessed yet")})</span>
+                          )}
                           {canAllocate && (
                             <button
                               type="button"
-                              className="rounded-full p-0.5 hover:bg-muted"
-                              aria-label={`Remove ${fullName(r.reviewer)} as reviewer`}
+                              className="rounded-full p-0.5 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                              aria-label={t("workshop.removeReviewer", "Remove {name} as reviewer", { name: fullName(r.reviewer) })}
                               onClick={() => {
-                                if (!r.submittedAt || window.confirm("This reviewer already submitted an assessment. Remove it?")) remove.mutate(r.assessmentId);
+                                if (!r.submittedAt || window.confirm(t("workshop.confirmRemoveReviewer", "This reviewer already submitted an assessment. Remove it?"))) remove.mutate(r.assessmentId);
                               }}
                             >
-                              <X className="size-3" />
+                              <X className="size-3" aria-hidden />
                             </button>
                           )}
                         </Badge>
@@ -222,7 +244,7 @@ function AllocationPanel({ activityId, w }: { activityId: string; w: WorkshopOve
                     {canAllocate && options.length > 0 && (
                       <div className="flex flex-wrap items-center gap-2">
                         <Label htmlFor={`add-${s.id}`} className="sr-only">
-                          Add reviewer for {s.title}
+                          {t("workshop.addReviewerFor", "Add reviewer for {title}", { title: s.title })}
                         </Label>
                         <select
                           id={`add-${s.id}`}
@@ -230,10 +252,10 @@ function AllocationPanel({ activityId, w }: { activityId: string; w: WorkshopOve
                           value={adding[s.id] ?? ""}
                           onChange={(e) => setAdding((a) => ({ ...a, [s.id]: e.target.value }))}
                         >
-                          <option value="">Add reviewer…</option>
+                          <option value="">{t("workshop.addReviewerOption", "Add reviewer…")}</option>
                           {options.map((p) => (
                             <option key={p.id} value={p.id}>
-                              {fullName(p)} ({p.reviewing} assigned)
+                              {t("workshop.reviewerOption", "{name} ({n} assigned)", { name: fullName(p), n: p.reviewing })}
                             </option>
                           ))}
                         </select>
@@ -243,7 +265,7 @@ function AllocationPanel({ activityId, w }: { activityId: string; w: WorkshopOve
                           disabled={!adding[s.id] || add.isPending}
                           onClick={() => add.mutate({ submissionId: s.id, reviewerId: adding[s.id]! })}
                         >
-                          <Plus /> Add
+                          <Plus aria-hidden /> {t("common.add", "Add")}
                         </Button>
                       </div>
                     )}
@@ -260,6 +282,7 @@ function AllocationPanel({ activityId, w }: { activityId: string; w: WorkshopOve
 
 function GradesPanel({ activityId, w }: { activityId: string; w: WorkshopOverview }) {
   const qc = useQueryClient();
+  const t = useT();
   const query = useWorkshopGrades(activityId);
   const [viewing, setViewing] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
@@ -268,7 +291,11 @@ function GradesPanel({ activityId, w }: { activityId: string; w: WorkshopOvervie
   const evaluate = useMutation({
     mutationFn: () => api<{ graded: number }>(`/workshops/${activityId}/evaluate`, { body: {} }),
     onSuccess: async (r) => {
-      toast.success(`Grades calculated and sent to the gradebook for ${r.graded} participant${r.graded === 1 ? "" : "s"}`);
+      toast.success(
+        r.graded === 1
+          ? t("workshop.gradesPushed.one", "Grades calculated and sent to the gradebook for {n} participant", { n: r.graded })
+          : t("workshop.gradesPushed.other", "Grades calculated and sent to the gradebook for {n} participants", { n: r.graded }),
+      );
       await qc.invalidateQueries({ queryKey: workshopKeys.all(activityId) });
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -277,7 +304,7 @@ function GradesPanel({ activityId, w }: { activityId: string; w: WorkshopOvervie
     mutationFn: (v: { submissionId: string; gradeOverride: number | null }) =>
       api(`/workshops/${activityId}/submissions/${v.submissionId}/override`, { method: "PUT", body: { gradeOverride: v.gradeOverride } }),
     onSuccess: async (_r, v) => {
-      toast.success(v.gradeOverride === null ? "Override cleared" : "Grade overridden");
+      toast.success(v.gradeOverride === null ? t("workshop.overrideCleared", "Override cleared") : t("workshop.gradeOverridden", "Grade overridden"));
       setOverrides((o) => ({ ...o, [v.submissionId]: "" }));
       await qc.invalidateQueries({ queryKey: workshopKeys.all(activityId) });
     },
@@ -290,25 +317,25 @@ function GradesPanel({ activityId, w }: { activityId: string; w: WorkshopOvervie
         <div className="space-y-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-muted-foreground">
-              Submission grade out of {w.submissionGradeMax} + assessment grade out of {w.assessmentGradeMax}.
+              {t("workshop.gradesExplain", "Submission grade out of {sub} + assessment grade out of {assess}.", { sub: w.submissionGradeMax, assess: w.assessmentGradeMax })}
             </p>
-            <Button size="sm" disabled={!canEvaluate || evaluate.isPending} onClick={() => evaluate.mutate()} title={canEvaluate ? undefined : "Switch to the evaluation phase first"}>
-              <Calculator /> {evaluate.isPending ? "Calculating…" : "Calculate & push grades"}
+            <Button size="sm" disabled={!canEvaluate || evaluate.isPending} onClick={() => evaluate.mutate()} title={canEvaluate ? undefined : t("workshop.evaluateFirst", "Switch to the evaluation phase first")}>
+              <Calculator aria-hidden /> {evaluate.isPending ? t("workshop.calculating", "Calculating…") : t("workshop.calculatePush", "Calculate & push grades")}
             </Button>
           </div>
           {query.data.length === 0 ? (
-            <EmptyState title="Nothing to grade yet" />
+            <EmptyState title={t("workshop.nothingToGrade", "Nothing to grade yet")} />
           ) : (
             <div className="overflow-x-auto rounded-lg border">
-              <Table>
+              <Table aria-label={t("workshop.gradesTable", "Workshop grades")}>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Participant</TableHead>
-                    <TableHead>Submission</TableHead>
-                    <TableHead className="text-right">Grade</TableHead>
-                    <TableHead>Override</TableHead>
-                    <TableHead className="text-right">Assessing</TableHead>
-                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead>{t("workshop.participant", "Participant")}</TableHead>
+                    <TableHead>{t("workshop.phase.submission", "Submission")}</TableHead>
+                    <TableHead className="text-right">{t("workshop.grade", "Grade")}</TableHead>
+                    <TableHead>{t("workshop.override", "Override")}</TableHead>
+                    <TableHead className="text-right">{t("workshop.assessing", "Assessing")}</TableHead>
+                    <TableHead className="text-right">{t("workshop.total", "Total")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -318,10 +345,13 @@ function GradesPanel({ activityId, w }: { activityId: string; w: WorkshopOvervie
                       <TableCell className="max-w-48">
                         {r.submissionId ? (
                           <Button variant="link" size="sm" className="h-auto max-w-full truncate p-0" onClick={() => setViewing(r.submissionId)}>
-                            <Eye /> <span className="truncate">{r.submissionTitle}</span>
+                            <Eye aria-hidden /> <span className="truncate">{r.submissionTitle}</span>
                           </Button>
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground">
+                            <span aria-hidden>—</span>
+                            <span className="sr-only">{t("workshop.noSubmission", "No submission")}</span>
+                          </span>
                         )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{fmt(r.submissionGrade)}</TableCell>
@@ -341,23 +371,23 @@ function GradesPanel({ activityId, w }: { activityId: string; w: WorkshopOvervie
                               max={w.submissionGradeMax}
                               step="any"
                               className="h-7 w-20"
-                              aria-label={`Override grade for ${fullName(r.user)}`}
+                              aria-label={t("workshop.overrideFor", "Override grade for {name}", { name: fullName(r.user) })}
                               placeholder={r.gradeOverride !== null ? fmt(r.gradeOverride) : "—"}
                               value={overrides[r.submissionId] ?? ""}
                               onChange={(e) => setOverrides((o) => ({ ...o, [r.submissionId!]: e.target.value }))}
                             />
                             <Button type="submit" size="xs" variant="outline" disabled={override.isPending || (overrides[r.submissionId] ?? "") === ""}>
-                              Set
+                              {t("workshop.set", "Set")}
                             </Button>
                             {r.gradeOverride !== null && (
                               <Button
                                 type="button"
                                 size="icon-xs"
                                 variant="ghost"
-                                aria-label={`Clear override for ${fullName(r.user)}`}
+                                aria-label={t("workshop.clearOverrideFor", "Clear override for {name}", { name: fullName(r.user) })}
                                 onClick={() => override.mutate({ submissionId: r.submissionId!, gradeOverride: null })}
                               >
-                                <X />
+                                <X aria-hidden />
                               </Button>
                             )}
                           </form>
@@ -366,7 +396,7 @@ function GradesPanel({ activityId, w }: { activityId: string; w: WorkshopOvervie
                       <TableCell className="text-right whitespace-nowrap tabular-nums">
                         {fmt(r.gradingGrade)}
                         <span className="block text-xs text-muted-foreground">
-                          {r.assessmentsDone}/{r.assessmentsGiven} done
+                          {t("workshop.doneFraction", "{done}/{total} done", { done: r.assessmentsDone, total: r.assessmentsGiven })}
                         </span>
                       </TableCell>
                       <TableCell className="text-right font-medium tabular-nums">{fmt(r.total)}</TableCell>
@@ -395,28 +425,30 @@ function SubmissionDialog({
   onClose: () => void;
 }) {
   const query = useSubmissionDetail(activityId, submissionId);
+  const t = useT();
   return (
     <Dialog open={!!submissionId} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        {!query.data && <DialogTitle className="sr-only">{t("workshop.submissionDetails", "Submission details")}</DialogTitle>}
         <QueryState query={query}>
           {query.data && (
             <div className="space-y-4">
               <DialogHeader>
                 <DialogTitle className="break-words">{query.data.title}</DialogTitle>
-                <p className="text-sm text-muted-foreground">by {fullName(query.data.author)}</p>
+                <p className="text-sm text-muted-foreground">{t("workshop.byAuthor", "by {name}", { name: fullName(query.data.author) })}</p>
               </DialogHeader>
               <HtmlContent html={query.data.content} className="break-words" />
               <FileList files={query.data.files} />
-              <h3 className="font-medium">Assessments</h3>
-              {query.data.assessments.length === 0 && <p className="text-sm text-muted-foreground">No reviewers allocated.</p>}
+              <h3 className="font-medium">{t("workshop.assessments", "Assessments")}</h3>
+              {query.data.assessments.length === 0 && <p className="text-sm text-muted-foreground">{t("workshop.noReviewersAllocated", "No reviewers allocated.")}</p>}
               <ul className="space-y-3">
                 {query.data.assessments.map((a) => (
                   <li key={a.id} className="rounded-lg border p-3 text-sm">
                     <div className="flex flex-wrap justify-between gap-2">
                       <span className="font-medium">{fullName(a.reviewer)}</span>
                       <span className="text-muted-foreground">
-                        {a.submittedAt ? `${fmt(a.grade)}%` : "Not submitted"}
-                        {a.gradingGrade !== null && ` · quality ${fmt(a.gradingGrade)}%`}
+                        {a.submittedAt ? `${fmt(a.grade)}%` : t("workshop.notSubmitted", "Not submitted")}
+                        {a.gradingGrade !== null && ` · ${t("workshop.quality", "quality {n}%", { n: fmt(a.gradingGrade) })}`}
                       </span>
                     </div>
                     {a.scores && (

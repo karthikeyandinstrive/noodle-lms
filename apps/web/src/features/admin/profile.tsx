@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorAlert, PageHeader, QueryState, formatDate } from "@/components/common";
 import { FileInput } from "@/components/file-input";
+import { MfaCard } from "@/features/identity/mfa";
 import type { Order } from "@/features/payments/types";
 import { api, errorMessage, fileUrl } from "@/lib/api";
 import { meKey } from "@/lib/session";
@@ -313,6 +314,7 @@ export function ProfilePage() {
         </div>
         <div className="space-y-4">
           <PasswordCard />
+          <MfaCard />
           <SessionsCard />
         </div>
       </div>

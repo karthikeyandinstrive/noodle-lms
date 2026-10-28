@@ -7,12 +7,14 @@ import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ErrorAlert, PageHeader, QueryState, formatDate, fullName } from "@/components/common";
+import { ErrorAlert, PageHeader, QueryState, fullName } from "@/components/common";
 import { api, errorMessage } from "@/lib/api";
+import { useFormat, useT } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
+import { cn } from "@/lib/utils";
 import { ConfirmDialog, Field, NativeSelect, RequireCapability } from "./shared";
 import type { AdminUserDetail, Role, RoleAssignment } from "./types";
 import { StatusBadge, usersKey } from "./users";
@@ -20,12 +22,13 @@ import { StatusBadge, usersKey } from "./users";
 const userKey = (id: string) => [...usersKey, id] as const;
 
 function ProfileCard({ user, canManage }: { user: AdminUserDetail; canManage: boolean }) {
+  const t = useT();
   const qc = useQueryClient();
   const [v, setV] = useState({ firstName: user.firstName, lastName: user.lastName, email: user.email, locale: user.locale, timezone: user.timezone });
   const save = useMutation({
     mutationFn: () => api(`/users/${user.id}`, { method: "PATCH", body: v }),
     onSuccess: () => {
-      toast.success("Profile saved");
+      toast.success(t("admin.userDetail.profileSaved", "Profile saved"));
       void qc.invalidateQueries({ queryKey: usersKey });
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -33,7 +36,7 @@ function ProfileCard({ user, canManage }: { user: AdminUserDetail; canManage: bo
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Profile</CardTitle>
+        <CardTitle>{t("admin.userDetail.profile", "Profile")}</CardTitle>
       </CardHeader>
       <CardContent>
         <form
@@ -45,28 +48,28 @@ function ProfileCard({ user, canManage }: { user: AdminUserDetail; canManage: bo
         >
           <fieldset disabled={!canManage} className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field id="u-first" label="First name">
+              <Field id="u-first" label={t("admin.shared.firstName", "First name")}>
                 <Input id="u-first" required maxLength={100} value={v.firstName} onChange={(e) => setV({ ...v, firstName: e.target.value })} />
               </Field>
-              <Field id="u-last" label="Last name">
+              <Field id="u-last" label={t("admin.shared.lastName", "Last name")}>
                 <Input id="u-last" required maxLength={100} value={v.lastName} onChange={(e) => setV({ ...v, lastName: e.target.value })} />
               </Field>
             </div>
-            <Field id="u-email" label="Email">
+            <Field id="u-email" label={t("common.email", "Email")}>
               <Input id="u-email" type="email" required maxLength={320} value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })} />
             </Field>
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field id="u-locale" label="Language">
+              <Field id="u-locale" label={t("admin.userDetail.language", "Language")}>
                 <Input id="u-locale" maxLength={10} value={v.locale} onChange={(e) => setV({ ...v, locale: e.target.value })} />
               </Field>
-              <Field id="u-tz" label="Time zone">
+              <Field id="u-tz" label={t("admin.userDetail.timezone", "Time zone")}>
                 <Input id="u-tz" maxLength={64} value={v.timezone} onChange={(e) => setV({ ...v, timezone: e.target.value })} />
               </Field>
             </div>
           </fieldset>
           {canManage && (
             <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? "Saving…" : "Save changes"}
+              {save.isPending ? t("common.saving", "Saving…") : t("admin.shared.saveChanges", "Save changes")}
             </Button>
           )}
         </form>
@@ -76,6 +79,7 @@ function ProfileCard({ user, canManage }: { user: AdminUserDetail; canManage: bo
 }
 
 function SiteRolesCard({ user }: { user: AdminUserDetail }) {
+  const t = useT();
   const session = useSession();
   const qc = useQueryClient();
   const systemContextId = session.organization?.systemContextId ?? null;
@@ -96,7 +100,7 @@ function SiteRolesCard({ user }: { user: AdminUserDetail }) {
   const assign = useMutation({
     mutationFn: () => api("/role-assignments", { body: { userId: user.id, roleId, contextId: systemContextId } }),
     onSuccess: () => {
-      toast.success("Role assigned");
+      toast.success(t("admin.userDetail.roleAssigned", "Role assigned"));
       setRoleId("");
       refresh();
     },
@@ -105,7 +109,7 @@ function SiteRolesCard({ user }: { user: AdminUserDetail }) {
   const unassign = useMutation({
     mutationFn: (id: string) => api(`/role-assignments/${id}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Role removed");
+      toast.success(t("admin.userDetail.roleRemoved", "Role removed"));
       refresh();
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -117,8 +121,8 @@ function SiteRolesCard({ user }: { user: AdminUserDetail }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Site roles</CardTitle>
-        <CardDescription>Roles held across the whole organization (system context).</CardDescription>
+        <CardTitle>{t("admin.userDetail.siteRoles", "Site roles")}</CardTitle>
+        <CardDescription>{t("admin.userDetail.siteRolesHelp", "Roles held across the whole organization (system context).")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {!canAssign ? (
@@ -131,12 +135,12 @@ function SiteRolesCard({ user }: { user: AdminUserDetail }) {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No site roles.</p>
+            <p className="text-sm text-muted-foreground">{t("admin.userDetail.noSiteRoles", "No site roles.")}</p>
           )
         ) : (
           <QueryState query={assignments}>
             {mine.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No site roles.</p>
+              <p className="text-sm text-muted-foreground">{t("admin.userDetail.noSiteRoles", "No site roles.")}</p>
             ) : (
               <ul className="flex flex-wrap gap-1.5">
                 {mine.map((a) => (
@@ -146,13 +150,13 @@ function SiteRolesCard({ user }: { user: AdminUserDetail }) {
                       <Button
                         variant="ghost"
                         size="icon-xs"
-                        aria-label={`Remove ${a.roleName}`}
+                        aria-label={t("admin.userDetail.removeRole", "Remove {role}", { role: a.roleName })}
                         disabled={unassign.isPending}
                         onClick={() => {
-                          if (confirm(`Remove the ${a.roleName} role from ${fullName(user)}?`)) unassign.mutate(a.id);
+                          if (confirm(t("admin.userDetail.confirmRemoveRole", "Remove the {role} role from {name}?", { role: a.roleName, name: fullName(user) }))) unassign.mutate(a.id);
                         }}
                       >
-                        <X />
+                        <X aria-hidden />
                       </Button>
                     </Badge>
                   </li>
@@ -166,8 +170,8 @@ function SiteRolesCard({ user }: { user: AdminUserDetail }) {
                 if (roleId) assign.mutate();
               }}
             >
-              <NativeSelect aria-label="Role to assign" value={roleId} onChange={(e) => setRoleId(e.target.value)} className="sm:max-w-xs">
-                <option value="">Choose a role…</option>
+              <NativeSelect aria-label={t("admin.userDetail.roleToAssign", "Role to assign")} value={roleId} onChange={(e) => setRoleId(e.target.value)} className="sm:max-w-xs">
+                <option value="">{t("admin.userDetail.chooseRole", "Choose a role…")}</option>
                 {assignable.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.name}
@@ -175,7 +179,7 @@ function SiteRolesCard({ user }: { user: AdminUserDetail }) {
                 ))}
               </NativeSelect>
               <Button type="submit" variant="outline" disabled={!roleId || assign.isPending}>
-                Assign role
+                {t("admin.userDetail.assignRole", "Assign role")}
               </Button>
             </form>
           </QueryState>
@@ -186,6 +190,8 @@ function SiteRolesCard({ user }: { user: AdminUserDetail }) {
 }
 
 function SecurityCard({ user, canManage }: { user: AdminUserDetail; canManage: boolean }) {
+  const t = useT();
+  const fmt = useFormat();
   const qc = useQueryClient();
   const router = useRouter();
   const session = useSession();
@@ -196,7 +202,13 @@ function SecurityCard({ user, canManage }: { user: AdminUserDetail; canManage: b
   const patch = useMutation({
     mutationFn: (body: Record<string, unknown>) => api(`/users/${user.id}`, { method: "PATCH", body }),
     onSuccess: (_d, body) => {
-      toast.success(body.password ? "Password reset; the user was signed out everywhere" : body.status === "suspended" ? "User suspended and signed out" : "User reactivated");
+      toast.success(
+        body.password
+          ? t("admin.userDetail.passwordReset", "Password reset; the user was signed out everywhere")
+          : body.status === "suspended"
+            ? t("admin.userDetail.suspended", "User suspended and signed out")
+            : t("admin.userDetail.reactivated", "User reactivated"),
+      );
       setDialog(null);
       setPassword("");
       void qc.invalidateQueries({ queryKey: usersKey });
@@ -206,7 +218,7 @@ function SecurityCard({ user, canManage }: { user: AdminUserDetail; canManage: b
   const remove = useMutation({
     mutationFn: () => api(`/users/${user.id}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("User deleted");
+      toast.success(t("admin.userDetail.deleted", "User deleted"));
       void qc.invalidateQueries({ queryKey: usersKey });
       router.replace("/admin/users");
     },
@@ -217,35 +229,39 @@ function SecurityCard({ user, canManage }: { user: AdminUserDetail; canManage: b
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Account</CardTitle>
+        <CardTitle>{t("admin.userDetail.account", "Account")}</CardTitle>
         <CardDescription>
-          Created {formatDate(user.createdAt, false)} · Last sign-in {formatDate(user.lastLoginAt)} · Email {user.emailVerifiedAt ? "verified" : "not verified"}
+          {t("admin.userDetail.accountMeta", "Created {created} · Last sign-in {lastLogin} · {verified}", {
+            created: fmt.date(user.createdAt, false),
+            lastLogin: fmt.date(user.lastLoginAt),
+            verified: user.emailVerifiedAt ? t("admin.userDetail.emailVerified", "Email verified") : t("admin.userDetail.emailNotVerified", "Email not verified"),
+          })}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-wrap gap-2">
         {user.status === "suspended" ? (
           <Button variant="outline" onClick={() => patch.mutate({ status: "active" })} disabled={patch.isPending}>
-            <UserCheck /> Reactivate
+            <UserCheck aria-hidden /> {t("admin.userDetail.reactivate", "Reactivate")}
           </Button>
         ) : (
           <Button variant="outline" onClick={() => setDialog("suspend")} disabled={isSelf}>
-            <UserX /> Suspend
+            <UserX aria-hidden /> {t("admin.userDetail.suspend", "Suspend")}
           </Button>
         )}
         <Button variant="outline" onClick={() => setDialog("password")}>
-          <KeyRound /> Reset password
+          <KeyRound aria-hidden /> {t("admin.userDetail.resetPassword", "Reset password")}
         </Button>
         <Button variant="destructive" onClick={() => setDialog("delete")} disabled={isSelf}>
-          <Trash2 /> Delete user
+          <Trash2 aria-hidden /> {t("admin.userDetail.deleteUser", "Delete user")}
         </Button>
       </CardContent>
 
       <ConfirmDialog
         open={dialog === "suspend"}
         onOpenChange={(o) => !o && setDialog(null)}
-        title={`Suspend ${fullName(user)}?`}
-        description="They will be signed out of every device and won't be able to sign in until reactivated."
-        confirmLabel="Suspend"
+        title={t("admin.userDetail.suspendTitle", "Suspend {name}?", { name: fullName(user) })}
+        description={t("admin.userDetail.suspendDescription", "They will be signed out of every device and won't be able to sign in until reactivated.")}
+        confirmLabel={t("admin.userDetail.suspend", "Suspend")}
         destructive
         pending={patch.isPending}
         onConfirm={() => patch.mutate({ status: "suspended" })}
@@ -253,25 +269,25 @@ function SecurityCard({ user, canManage }: { user: AdminUserDetail; canManage: b
       <ConfirmDialog
         open={dialog === "password"}
         onOpenChange={(o) => !o && setDialog(null)}
-        title="Set a new password"
-        description="The user will be signed out of every device. Share the new password through a secure channel."
-        confirmLabel="Reset password"
+        title={t("admin.userDetail.newPasswordTitle", "Set a new password")}
+        description={t("admin.userDetail.newPasswordDescription", "The user will be signed out of every device. Share the new password through a secure channel.")}
+        confirmLabel={t("admin.userDetail.resetPassword", "Reset password")}
         pending={patch.isPending}
         onConfirm={() => {
-          if (password.length < 10) toast.error("Use at least 10 characters");
+          if (password.length < 10) toast.error(t("admin.userDetail.passwordTooShort", "Use at least 10 characters"));
           else patch.mutate({ password });
         }}
       >
-        <Field id="reset-pass" label="New password" hint="At least 10 characters.">
+        <Field id="reset-pass" label={t("admin.userDetail.newPassword", "New password")} hint={t("admin.shared.passwordHint", "At least 10 characters.")}>
           <Input id="reset-pass" type="password" autoComplete="new-password" minLength={10} maxLength={200} required value={password} onChange={(e) => setPassword(e.target.value)} />
         </Field>
       </ConfirmDialog>
       <ConfirmDialog
         open={dialog === "delete"}
         onOpenChange={(o) => !o && setDialog(null)}
-        title={`Delete ${fullName(user)}?`}
-        description="Personal data is anonymized and cannot be recovered. Learning records (grades, submissions) are kept for reporting."
-        confirmLabel="Delete user"
+        title={t("admin.shared.deleteTitle", "Delete {name}?", { name: fullName(user) })}
+        description={t("admin.userDetail.deleteDescription", "Personal data is anonymized and cannot be recovered. Learning records (grades, submissions) are kept for reporting.")}
+        confirmLabel={t("admin.userDetail.deleteUser", "Delete user")}
         destructive
         confirmText={user.email}
         pending={remove.isPending}
@@ -282,15 +298,16 @@ function SecurityCard({ user, canManage }: { user: AdminUserDetail; canManage: b
 }
 
 export function UserDetail() {
+  const t = useT();
   const { id } = useParams<{ id: string }>();
   const session = useSession();
   const user = useQuery({ queryKey: userKey(id), queryFn: () => api<AdminUserDetail>(`/users/${id}`) });
   const canManage = session.can("user:manage");
   return (
     <RequireCapability capability="user:view">
-      <Button variant="ghost" size="sm" className="mb-2 -ml-2" render={<Link href="/admin/users" />}>
-        <ArrowLeft /> All users
-      </Button>
+      <Link href="/admin/users" className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "mb-2 -ml-2")}>
+        <ArrowLeft aria-hidden /> {t("admin.userDetail.allUsers", "All users")}
+      </Link>
       <QueryState query={user}>
         {user.data && (
           <>
@@ -312,11 +329,11 @@ export function UserDetail() {
                 <SiteRolesCard user={user.data} />
                 <Card>
                   <CardHeader>
-                    <CardTitle>Courses</CardTitle>
+                    <CardTitle>{t("admin.userDetail.courses", "Courses")}</CardTitle>
                   </CardHeader>
                   <CardContent>
                     {user.data.courses.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">Not enrolled in any course.</p>
+                      <p className="text-sm text-muted-foreground">{t("admin.userDetail.noCourses", "Not enrolled in any course.")}</p>
                     ) : (
                       <ul className="divide-y">
                         {user.data.courses.map((c) => (
@@ -324,7 +341,7 @@ export function UserDetail() {
                             <Link href={`/courses/${c.id}`} className="truncate hover:underline">
                               {c.fullname}
                             </Link>
-                            {c.status !== "active" && <Badge variant="outline">{c.status}</Badge>}
+                            {c.status !== "active" && <Badge variant="outline">{c.status === "suspended" ? t("admin.shared.suspended", "Suspended") : c.status}</Badge>}
                           </li>
                         ))}
                       </ul>

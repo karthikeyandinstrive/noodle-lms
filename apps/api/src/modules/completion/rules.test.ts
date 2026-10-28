@@ -49,39 +49,30 @@ describe("courseProgress", () => {
   });
 });
 
-// follow-ups: the flush subscriber must emit only after the worker subscriber, outside its call stack.
-const handlers: Array<(tx: unknown, p: unknown) => Promise<void>> = [];
-const emitted: string[] = [];
+// follow-ups: stored in the outbox through the caller's transaction, in order.
+const emitted: Array<{ tx: unknown; name: string }> = [];
 vi.mock("../../core/events", () => ({
-  on: (_name: string, h: (tx: unknown, p: unknown) => Promise<void>) => handlers.push(h),
-  emit: async (name: string) => {
-    emitted.push(name);
+  emitInTx: async (tx: unknown, name: string) => {
+    emitted.push({ tx, name });
   },
 }));
-vi.mock("../../core/logger", () => ({ logger: { error: vi.fn() } }));
 
-describe("subscribeWithFollowUps", () => {
+describe("emitFollowUps", () => {
   afterEach(() => {
-    handlers.length = 0;
     emitted.length = 0;
   });
-  it("defers follow-up emits until after both subscribers ran", async () => {
-    const { subscribeWithFollowUps } = await import("./follow-ups");
-    subscribeWithFollowUps("activity.viewed", async () => [
+  it("writes every follow-up with emitInTx on the given transaction, in order", async () => {
+    const { emitFollowUps } = await import("./follow-ups");
+    const tx = { marker: true };
+    await emitFollowUps(tx as never, [
       { name: "activity.completed", payload: { organizationId: "o", activityId: "a", courseId: "c", userId: "u", state: "complete" } },
       { name: "course.completed", payload: { organizationId: "o", courseId: "c", userId: "u" } },
     ]);
-    expect(handlers).toHaveLength(2);
-    const payload = { organizationId: "o", activityId: "a", courseId: "c", userId: "u" };
-    await handlers[0]!(null, payload);
-    await handlers[1]!(null, payload);
-    expect(emitted).toEqual([]); // not emitted synchronously (still inside the flush transaction)
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
-    expect(emitted).toEqual(["activity.completed", "course.completed"]);
-    // A second flush for the same payload emits nothing.
-    await handlers[1]!(null, payload);
-    await new Promise((r) => setImmediate(r));
+    expect(emitted).toEqual([
+      { tx, name: "activity.completed" },
+      { tx, name: "course.completed" },
+    ]);
+    await emitFollowUps(tx as never, []);
     expect(emitted).toHaveLength(2);
   });
 });

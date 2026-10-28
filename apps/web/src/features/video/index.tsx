@@ -4,14 +4,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock, ExternalLink, PlayCircle, Video } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { EmptyState, formatDate, fullName, QueryState } from "@/components/common";
+import { EmptyState, fullName, QueryState } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, errorMessage } from "@/lib/api";
+import { useFormat, useT, type Translate } from "@/lib/i18n";
 import type { UserSummary } from "@/lib/types";
 import type { ActivityTypeUI, ActivityViewProps, SettingsFieldsProps } from "../activities/types";
 import { fromLocalInput, NativeSelectClass, openInNewTab, toLocalInput } from "../certificate/shared";
@@ -32,6 +33,8 @@ type Status = {
 type Attendance = { enrolledCount: number; rows: { user: UserSummary; firstJoinedAt: string; lastJoinedAt: string; joins: number }[] };
 
 const PROVIDERS: Record<string, string> = { jitsi: "Jitsi Meet", zoom: "Zoom", bigbluebutton: "BigBlueButton", custom: "Other (link)" };
+/** Only the generic "Other" option needs translating; product names stay as-is. */
+const providerLabel = (t: Translate, k: string) => (k === "custom" ? t("video.provider.custom", "Other (link)") : (PROVIDERS[k] ?? k));
 
 function safeHttps(v: string | null | undefined) {
   if (!v) return null;
@@ -43,59 +46,63 @@ function safeHttps(v: string | null | undefined) {
   }
 }
 
-function formatCountdown(ms: number) {
+function formatCountdown(t: Translate, ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m ${sec}s`;
-  return `${m}m ${sec.toString().padStart(2, "0")}s`;
+  if (d > 0) return t("video.countdown.days", "{d}d {h}h {m}m", { d, h, m });
+  if (h > 0) return t("video.countdown.hours", "{h}h {m}m {s}s", { h, m, s: sec });
+  return t("video.countdown.minutes", "{m}m {s}s", { m, s: sec.toString().padStart(2, "0") });
 }
 
 /** Ticks every second; `offset` corrects for clock skew between browser and server. */
 function useNow(offset: number) {
   const [now, setNow] = useState(() => Date.now() + offset);
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now() + offset), 1000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => setNow(Date.now() + offset), 1000);
+    return () => clearInterval(timer);
   }, [offset]);
   return now;
 }
 
 function AttendanceReport({ activityId }: { activityId: string }) {
+  const t = useT();
+  const fmt = useFormat();
   const q = useQuery({ queryKey: ["video", activityId, "attendance"], queryFn: () => api<Attendance>(`/video/${activityId}/attendance`) });
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Attendance</CardTitle>
+        <CardTitle>
+          <h2 id="video-attendance">{t("video.attendance", "Attendance")}</h2>
+        </CardTitle>
         {q.data && (
           <CardDescription>
-            {q.data.rows.length} joined · {q.data.enrolledCount} enrolled
+            {t("video.attendanceSummary", "{joined} joined · {enrolled} enrolled", { joined: q.data.rows.length, enrolled: q.data.enrolledCount })}
           </CardDescription>
         )}
       </CardHeader>
       <CardContent>
         <QueryState query={q}>
-          {q.data && !q.data.rows.length && <EmptyState title="Nobody has joined yet" />}
+          {q.data && !q.data.rows.length && <EmptyState title={t("video.nobodyJoined", "Nobody has joined yet")} />}
           {q.data && q.data.rows.length > 0 && (
             <div className="overflow-x-auto">
-              <Table>
+              <Table aria-labelledby="video-attendance">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Participant</TableHead>
-                    <TableHead>First joined</TableHead>
-                    <TableHead>Last joined</TableHead>
-                    <TableHead className="text-right">Joins</TableHead>
+                    <TableHead>{t("video.participant", "Participant")}</TableHead>
+                    <TableHead>{t("video.firstJoined", "First joined")}</TableHead>
+                    <TableHead>{t("video.lastJoined", "Last joined")}</TableHead>
+                    <TableHead className="text-right">{t("video.joins", "Joins")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {q.data.rows.map((r) => (
                     <TableRow key={r.user.id}>
                       <TableCell className="font-medium">{fullName(r.user)}</TableCell>
-                      <TableCell>{formatDate(r.firstJoinedAt)}</TableCell>
-                      <TableCell>{formatDate(r.lastJoinedAt)}</TableCell>
+                      <TableCell>{fmt.date(r.firstJoinedAt)}</TableCell>
+                      <TableCell>{fmt.date(r.lastJoinedAt)}</TableCell>
                       <TableCell className="text-right">{r.joins}</TableCell>
                     </TableRow>
                   ))}
@@ -111,6 +118,8 @@ function AttendanceReport({ activityId }: { activityId: string }) {
 
 function View({ activity }: ActivityViewProps) {
   const qc = useQueryClient();
+  const t = useT();
+  const fmt = useFormat();
   const status = useQuery({
     queryKey: ["video", activity.id, "status"],
     queryFn: async () => {
@@ -149,34 +158,45 @@ function View({ activity }: ActivityViewProps) {
               <Card>
                 <CardContent className="space-y-4">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline">{PROVIDERS[s.provider] ?? s.provider}</Badge>
-                    {live && <Badge className="bg-red-600 text-white">Live now</Badge>}
-                    {now > ends && <Badge variant="secondary">Ended</Badge>}
-                    {s.myFirstJoinAt && <Badge variant="secondary">You joined {formatDate(s.myFirstJoinAt)}</Badge>}
+                    <Badge variant="outline">{providerLabel(t, s.provider)}</Badge>
+                    {live && <Badge className="bg-red-600 text-white">{t("video.liveNow", "Live now")}</Badge>}
+                    {now > ends && <Badge variant="secondary">{t("video.ended", "Ended")}</Badge>}
+                    {s.myFirstJoinAt && <Badge variant="secondary">{t("video.youJoined", "You joined {date}", { date: fmt.date(s.myFirstJoinAt) })}</Badge>}
                   </div>
                   <dl className="grid gap-3 text-sm sm:grid-cols-2">
                     <div>
-                      <dt className="text-muted-foreground">Starts</dt>
-                      <dd className="font-medium">{formatDate(s.startsAt)}</dd>
+                      <dt className="text-muted-foreground">{t("video.starts", "Starts")}</dt>
+                      <dd className="font-medium">{fmt.date(s.startsAt)}</dd>
                     </div>
                     <div>
-                      <dt className="text-muted-foreground">Ends</dt>
-                      <dd className="font-medium">{formatDate(s.endsAt)}</dd>
+                      <dt className="text-muted-foreground">{t("video.ends", "Ends")}</dt>
+                      <dd className="font-medium">{fmt.date(s.endsAt)}</dd>
                     </div>
                   </dl>
                   {now < starts && (
-                    <p className="flex items-center gap-2 text-sm" aria-live="polite">
+                    // Not a live region: it changes every second. role=timer is implicitly aria-live=off.
+                    <p className="flex items-center gap-2 text-sm" role="timer">
                       <Clock className="size-4 text-muted-foreground" aria-hidden />
-                      Starts in <span className="font-mono font-medium tabular-nums">{formatCountdown(starts - now)}</span>
+                      {t("video.startsIn", "Starts in")}{" "}
+                      <span className="font-mono font-medium tabular-nums">{formatCountdown(t, starts - now)}</span>
                     </p>
                   )}
                   <div className="flex flex-wrap items-center gap-2">
                     <Button disabled={!joinable || join.isPending} onClick={() => join.mutate()}>
-                      <Video /> {join.isPending ? "Joining…" : s.canModerate && !windowOpen ? "Open meeting (moderator)" : "Join meeting"}
-                      <span className="sr-only">(opens in a new tab)</span>
+                      <Video aria-hidden />{" "}
+                      {join.isPending
+                        ? t("video.joining", "Joining…")
+                        : s.canModerate && !windowOpen
+                          ? t("video.openAsModerator", "Open meeting (moderator)")
+                          : t("video.join", "Join meeting")}
+                      <span className="sr-only">{t("video.opensNewTab", "(opens in a new tab)")}</span>
                     </Button>
-                    {!joinable && now < opens && <p className="text-sm text-muted-foreground">You can join from {formatDate(s.opensAt)}.</p>}
-                    {!joinable && now > closes && <p className="text-sm text-muted-foreground">This meeting has ended.</p>}
+                    {!joinable && now < opens && (
+                      <p className="text-sm text-muted-foreground">{t("video.canJoinFrom", "You can join from {date}.", { date: fmt.date(s.opensAt) })}</p>
+                    )}
+                    {!joinable && now > closes && (
+                      <p className="text-sm text-muted-foreground">{t("video.meetingEnded", "This meeting has ended.")}</p>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -184,11 +204,12 @@ function View({ activity }: ActivityViewProps) {
                 <Card size="sm">
                   <CardContent className="flex flex-wrap items-center justify-between gap-3">
                     <span className="flex items-center gap-2 text-sm font-medium">
-                      <PlayCircle className="size-4 text-primary" aria-hidden /> Recording available
+                      <PlayCircle className="size-4 text-primary" aria-hidden /> {t("video.recordingAvailable", "Recording available")}
                     </span>
-                    <Button variant="outline" size="sm" render={<a href={recording} target="_blank" rel="noopener noreferrer" />}>
-                      Watch recording <ExternalLink />
-                    </Button>
+                    <a href={recording} target="_blank" rel="noopener noreferrer" className={buttonVariants({ variant: "outline", size: "sm" })}>
+                      {t("video.watchRecording", "Watch recording")} <ExternalLink aria-hidden />
+                      <span className="sr-only">{t("video.opensNewTab", "(opens in a new tab)")}</span>
+                    </a>
                   </CardContent>
                 </Card>
               )}
@@ -207,20 +228,21 @@ function SettingsFields({ value, onChange, mode }: SettingsFieldsProps) {
   const set = (k: string, v: unknown) => onChange({ ...value, [k]: v });
   const badJoin = joinUrl.trim() !== "" && !safeHttps(joinUrl.trim());
   const badRecording = recordingUrl.trim() !== "" && !safeHttps(recordingUrl.trim());
+  const t = useT();
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="space-y-1.5">
-        <Label htmlFor="video-provider">Provider</Label>
+        <Label htmlFor="video-provider">{t("video.provider", "Provider")}</Label>
         <select id="video-provider" className={NativeSelectClass} value={provider} onChange={(e) => set("provider", e.target.value)}>
-          {Object.entries(PROVIDERS).map(([k, label]) => (
+          {Object.keys(PROVIDERS).map((k) => (
             <option key={k} value={k}>
-              {label}
+              {providerLabel(t, k)}
             </option>
           ))}
         </select>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="video-start">Starts at</Label>
+        <Label htmlFor="video-start">{t("video.startsAt", "Starts at")}</Label>
         <Input
           id="video-start"
           type="datetime-local"
@@ -230,7 +252,7 @@ function SettingsFields({ value, onChange, mode }: SettingsFieldsProps) {
         />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="video-duration">Duration (minutes)</Label>
+        <Label htmlFor="video-duration">{t("video.duration", "Duration (minutes)")}</Label>
         <Input
           id="video-duration"
           type="number"
@@ -241,34 +263,42 @@ function SettingsFields({ value, onChange, mode }: SettingsFieldsProps) {
         />
       </div>
       {provider === "jitsi" ? (
-        <p className="self-end text-sm text-muted-foreground sm:col-span-1">A private Jitsi room is created automatically.</p>
+        (
+        <p className="self-end text-sm text-muted-foreground sm:col-span-1">{t("video.jitsiAuto", "A private Jitsi room is created automatically.")}</p>
+      )
       ) : (
         <div className="space-y-1.5">
-          <Label htmlFor="video-join">Meeting link</Label>
+          <Label htmlFor="video-join">{t("video.meetingLink", "Meeting link")}</Label>
           <Input
             id="video-join"
             type="url"
-            placeholder={mode === "edit" ? "Leave blank to keep the current link" : "https://…"}
+            placeholder={mode === "edit" ? t("video.keepLink", "Leave blank to keep the current link") : "https://…"}
             value={joinUrl}
             aria-invalid={badJoin || undefined}
+            aria-describedby="video-join-help"
             onChange={(e) => set("joinUrl", e.target.value)}
           />
-          <p className={badJoin ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
-            {badJoin ? "Use a https:// link." : "Only shown to participants when the meeting opens."}
+          <p id="video-join-help" className={badJoin ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+            {badJoin ? t("video.useHttps", "Use a https:// link.") : t("video.joinLinkHint", "Only shown to participants when the meeting opens.")}
           </p>
         </div>
       )}
       <div className="space-y-1.5 sm:col-span-2">
-        <Label htmlFor="video-recording">Recording link (optional)</Label>
+        <Label htmlFor="video-recording">{t("video.recordingLink", "Recording link (optional)")}</Label>
         <Input
           id="video-recording"
           type="url"
           placeholder="https://…"
           value={recordingUrl}
           aria-invalid={badRecording || undefined}
+          aria-describedby={badRecording ? "video-recording-error" : undefined}
           onChange={(e) => set("recordingUrl", e.target.value || null)}
         />
-        {badRecording && <p className="text-xs text-destructive">Use a https:// link.</p>}
+        {badRecording && (
+          <p id="video-recording-error" className="text-xs text-destructive" role="alert">
+            {t("video.useHttps", "Use a https:// link.")}
+          </p>
+        )}
       </div>
     </div>
   );

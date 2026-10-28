@@ -1,8 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { notificationPreferences, notifications, users, withTenant, type DB } from "@lms/db";
+import { notificationPreferences, notifications, users, type DB } from "@lms/db";
 import { config } from "../config";
-import { enqueue } from "./jobs";
-import { sendMail } from "./mail";
+import { queueMail } from "./mail";
 
 /**
  * Notification types. Users can toggle in-app/email per type
@@ -22,6 +21,11 @@ export const NOTIFICATION_TYPES = {
   payment: "Payment receipts",
   announcement: "Course announcements",
   video_meeting: "Video meeting reminders",
+  due_soon: "Deadlines in the next 24 hours",
+  grade_updated: "A teacher changed one of your grades",
+  message: "New private messages",
+  backup_ready: "Course backup or restore finished",
+  security: "Security alerts (new sign-in, MFA changes)",
 } as const;
 export type NotificationType = keyof typeof NOTIFICATION_TYPES;
 
@@ -66,17 +70,17 @@ export async function notify(
 
   const emailIds = userIds.filter((id) => prefOf.get(id)?.email ?? true);
   if (!emailIds.length) return;
-  enqueue(`notify-email:${input.type}`, async () => {
-    const recipients = await withTenant(input.organizationId, (t) =>
-      t.select({ email: users.email }).from(users).where(and(inArray(users.id, emailIds), eq(users.status, "active"))),
-    );
-    const link = input.link ? `${config.APP_URL}${input.link}` : undefined;
-    for (const r of recipients) {
-      await sendMail({
-        to: r.email,
-        subject: input.title,
-        text: [input.body, link].filter(Boolean).join("\n\n") || input.title,
-      });
-    }
-  });
+  // Emails are durable jobs written in the caller's transaction: sent only if it commits.
+  const recipients = await tx
+    .select({ email: users.email })
+    .from(users)
+    .where(and(inArray(users.id, emailIds), eq(users.status, "active")));
+  const link = input.link ? `${config.APP_URL}${input.link}` : undefined;
+  for (const r of recipients) {
+    await queueMail(tx, input.organizationId, {
+      to: r.email,
+      subject: input.title,
+      text: [input.body, link].filter(Boolean).join("\n\n") || input.title,
+    });
+  }
 }

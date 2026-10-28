@@ -11,17 +11,32 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ErrorAlert, PageHeader, QueryState } from "@/components/common";
 import { api, errorMessage } from "@/lib/api";
+import { useT, type Translate } from "@/lib/i18n";
 import { Field, NativeSelect, RequireCapability } from "./shared";
 import type { StorageConfig } from "./types";
 
 const storageKey = ["admin", "storage"] as const;
 type Provider = "s3" | "minio" | "r2";
 
-const PROVIDERS: Record<Provider, { label: string; endpointHint: string; regionHint: string }> = {
-  s3: { label: "Amazon S3", endpointHint: "Leave blank for AWS.", regionHint: "e.g. eu-west-1 (required)" },
-  minio: { label: "MinIO (self-hosted)", endpointHint: "e.g. https://minio.example.com (required)", regionHint: "Usually us-east-1" },
-  r2: { label: "Cloudflare R2", endpointHint: "https://<account-id>.r2.cloudflarestorage.com (required)", regionHint: "Use auto" },
-};
+const PROVIDER_IDS: Provider[] = ["s3", "minio", "r2"];
+const providerMeta = (p: Provider, t: Translate) =>
+  ({
+    s3: {
+      label: "Amazon S3",
+      endpointHint: t("admin.storage.s3.endpointHint", "Leave blank for AWS."),
+      regionHint: t("admin.storage.s3.regionHint", "e.g. eu-west-1 (required)"),
+    },
+    minio: {
+      label: t("admin.storage.minio.label", "MinIO (self-hosted)"),
+      endpointHint: t("admin.storage.minio.endpointHint", "e.g. https://minio.example.com (required)"),
+      regionHint: t("admin.storage.minio.regionHint", "Usually us-east-1"),
+    },
+    r2: {
+      label: "Cloudflare R2",
+      endpointHint: t("admin.storage.r2.endpointHint", "https://<account-id>.r2.cloudflarestorage.com (required)"),
+      regionHint: t("admin.storage.r2.regionHint", "Use auto"),
+    },
+  })[p];
 
 type Form = { provider: Provider; enabled: boolean; endpoint: string; region: string; bucket: string; accessKeyId: string; secretAccessKey: string; publicUrl: string };
 
@@ -39,6 +54,7 @@ function toForm(c: StorageConfig | null): Form {
 }
 
 function StorageForm({ current }: { current: StorageConfig | null }) {
+  const t = useT();
   const qc = useQueryClient();
   const [v, setV] = useState<Form>(() => toForm(current));
   const [error, setError] = useState<unknown>(null);
@@ -60,7 +76,7 @@ function StorageForm({ current }: { current: StorageConfig | null }) {
   const save = useMutation({
     mutationFn: () => api("/storage/config", { body: { ...payload(), enabled: v.enabled } }),
     onSuccess: () => {
-      toast.success("Storage settings saved");
+      toast.success(t("admin.storage.saved", "Storage settings saved"));
       void qc.invalidateQueries({ queryKey: storageKey });
     },
     onError: setError,
@@ -70,7 +86,7 @@ function StorageForm({ current }: { current: StorageConfig | null }) {
     onSuccess: setTest,
     onError: (e) => setTest({ ok: false, message: errorMessage(e) }),
   });
-  const meta = PROVIDERS[v.provider];
+  const meta = providerMeta(v.provider, t);
 
   return (
     <form
@@ -84,37 +100,44 @@ function StorageForm({ current }: { current: StorageConfig | null }) {
       {error ? <ErrorAlert error={error} /> : null}
       <Card>
         <CardHeader>
-          <CardTitle>Object storage</CardTitle>
+          <CardTitle>{t("admin.storage.objectStorage", "Object storage")}</CardTitle>
           <CardDescription>
-            Files are stored on the server&apos;s default storage until an external bucket is enabled here. Only new uploads use the new bucket.
+            {t(
+              "admin.storage.objectStorageHelp",
+              "Files are stored on the server's default storage until an external bucket is enabled here. Only new uploads use the new bucket.",
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Field id="st-provider" label="Provider">
+          <Field id="st-provider" label={t("admin.storage.provider", "Provider")}>
             <NativeSelect id="st-provider" value={v.provider} onChange={(e) => set("provider", e.target.value as Provider)}>
-              {(Object.keys(PROVIDERS) as Provider[]).map((p) => (
+              {PROVIDER_IDS.map((p) => (
                 <option key={p} value={p}>
-                  {PROVIDERS[p].label}
+                  {providerMeta(p, t).label}
                 </option>
               ))}
             </NativeSelect>
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field id="st-endpoint" label="Endpoint" hint={meta.endpointHint}>
+            <Field id="st-endpoint" label={t("admin.storage.endpoint", "Endpoint")} hint={meta.endpointHint}>
               <Input id="st-endpoint" type="url" required={v.provider !== "s3"} value={v.endpoint} onChange={(e) => set("endpoint", e.target.value)} />
             </Field>
-            <Field id="st-region" label="Region" hint={meta.regionHint}>
+            <Field id="st-region" label={t("admin.storage.region", "Region")} hint={meta.regionHint}>
               <Input id="st-region" required={v.provider === "s3"} maxLength={50} value={v.region} onChange={(e) => set("region", e.target.value)} />
             </Field>
           </div>
-          <Field id="st-bucket" label="Bucket">
+          <Field id="st-bucket" label={t("admin.storage.bucket", "Bucket")}>
             <Input id="st-bucket" required minLength={3} maxLength={63} value={v.bucket} onChange={(e) => set("bucket", e.target.value)} />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field id="st-key" label="Access key ID">
+            <Field id="st-key" label={t("admin.storage.accessKeyId", "Access key ID")}>
               <Input id="st-key" required autoComplete="off" maxLength={200} value={v.accessKeyId} onChange={(e) => set("accessKeyId", e.target.value)} />
             </Field>
-            <Field id="st-secret" label="Secret access key" hint={current ? `Stored: ${current.secretAccessKey}. Leave blank to keep it.` : undefined}>
+            <Field
+              id="st-secret"
+              label={t("admin.storage.secretAccessKey", "Secret access key")}
+              hint={current ? t("admin.storage.secretStored", "Stored: {secret}. Leave blank to keep it.", { secret: current.secretAccessKey }) : undefined}
+            >
               <Input
                 id="st-secret"
                 type="password"
@@ -127,20 +150,30 @@ function StorageForm({ current }: { current: StorageConfig | null }) {
               />
             </Field>
           </div>
-          <Field id="st-public" label="Public URL" hint="Optional CDN or public bucket URL.">
+          <Field id="st-public" label={t("admin.storage.publicUrl", "Public URL")} hint={t("admin.storage.publicUrlHint", "Optional CDN or public bucket URL.")}>
             <Input id="st-public" type="url" value={v.publicUrl} onChange={(e) => set("publicUrl", e.target.value)} />
           </Field>
           <label className="flex items-start gap-3 text-sm">
-            <Switch checked={v.enabled} onCheckedChange={(c) => set("enabled", c)} className="mt-0.5" />
+            <Switch
+              checked={v.enabled}
+              onCheckedChange={(c) => set("enabled", c)}
+              className="mt-0.5"
+              aria-labelledby="st-enabled-label"
+              aria-describedby="st-enabled-desc"
+            />
             <span>
-              <span className="font-medium">Use this bucket for new uploads</span>
-              <span className="block text-muted-foreground">Test the connection before enabling.</span>
+              <span id="st-enabled-label" className="font-medium">
+                {t("admin.storage.useBucket", "Use this bucket for new uploads")}
+              </span>
+              <span id="st-enabled-desc" className="block text-muted-foreground">
+                {t("admin.storage.testFirst", "Test the connection before enabling.")}
+              </span>
             </span>
           </label>
           {test && (
-            <Alert variant={test.ok ? "default" : "destructive"} aria-live="polite">
-              {test.ok ? <CheckCircle2 /> : <XCircle />}
-              <AlertTitle>{test.ok ? "Connection succeeded" : "Connection failed"}</AlertTitle>
+            <Alert variant={test.ok ? "default" : "destructive"} role={test.ok ? "status" : "alert"}>
+              {test.ok ? <CheckCircle2 aria-hidden /> : <XCircle aria-hidden />}
+              <AlertTitle>{test.ok ? t("admin.storage.testOk", "Connection succeeded") : t("admin.storage.testFailed", "Connection failed")}</AlertTitle>
               <AlertDescription>{test.message}</AlertDescription>
             </Alert>
           )}
@@ -148,10 +181,10 @@ function StorageForm({ current }: { current: StorageConfig | null }) {
       </Card>
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="outline" disabled={runTest.isPending || !v.bucket || !v.accessKeyId} onClick={() => runTest.mutate()}>
-          <PlugZap /> {runTest.isPending ? "Testing…" : "Test connection"}
+          <PlugZap aria-hidden /> {runTest.isPending ? t("admin.storage.testing", "Testing…") : t("admin.storage.testConnection", "Test connection")}
         </Button>
         <Button type="submit" disabled={save.isPending}>
-          {save.isPending ? "Saving…" : "Save"}
+          {save.isPending ? t("common.saving", "Saving…") : t("common.save", "Save")}
         </Button>
       </div>
     </form>
@@ -159,10 +192,11 @@ function StorageForm({ current }: { current: StorageConfig | null }) {
 }
 
 export function StorageAdmin() {
+  const t = useT();
   const cfg = useQuery({ queryKey: storageKey, queryFn: () => api<StorageConfig | null>("/storage/config") });
   return (
     <RequireCapability capability="storage:manage">
-      <PageHeader title="File storage" description="Store course files in your own S3-compatible bucket." />
+      <PageHeader title={t("admin.storage.title", "File storage")} description={t("admin.storage.description", "Store course files in your own S3-compatible bucket.")} />
       <div className="max-w-3xl">
         <QueryState query={cfg}>{cfg.isSuccess && <StorageForm key={JSON.stringify(cfg.data)} current={cfg.data ?? null} />}</QueryState>
       </div>

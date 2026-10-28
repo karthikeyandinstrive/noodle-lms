@@ -8,11 +8,13 @@ import { activityKey, useActivity } from "@/features/activities/use-activity";
 import { courseKey } from "@/features/courses/use-course";
 import { api } from "@/lib/api";
 import type { CourseOverview } from "@/lib/types";
+import { useT } from "@/lib/i18n";
 
 export default function EditActivityPage() {
   const activity = useActivity();
   const router = useRouter();
   const qc = useQueryClient();
+  const t = useT();
   const courseId = activity.data?.courseId;
   const course = useQuery({
     queryKey: courseKey(courseId ?? ""),
@@ -24,7 +26,7 @@ export default function EditActivityPage() {
     <QueryState query={activity}>
       {activity.data && course.data && (
         <>
-          <PageHeader title={`Edit ${activity.data.name}`} />
+          <PageHeader title={t("activity.editTitle", "Edit {name}", { name: activity.data.name })} />
           <ActivityForm
             courseId={activity.data.courseId}
             sections={course.data.sections}

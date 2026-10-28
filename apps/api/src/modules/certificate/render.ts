@@ -36,24 +36,6 @@ export function parseHexColor(hex: string | undefined) {
   return { r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255 };
 }
 
-/**
- * Maps text to characters the standard PDF fonts (WinAnsi) can encode: keeps
- * supported characters, strips diacritics where that helps, otherwise "?".
- */
-export function toEncodable(text: string, supported: Set<number>) {
-  let out = "";
-  for (const ch of text) {
-    const cp = ch.codePointAt(0)!;
-    if (ch === "\n" || supported.has(cp)) {
-      out += ch;
-      continue;
-    }
-    const folded = ch.normalize("NFKD").replace(/[̀-ͯ]/g, "");
-    out += folded && [...folded].every((c) => supported.has(c.codePointAt(0)!)) ? folded : "?";
-  }
-  return out;
-}
-
 /** Greedy word wrap; `measure` returns the width of a string in the same unit as maxWidth. */
 export function wrapText(text: string, maxWidth: number | null, measure: (s: string) => number) {
   const lines: string[] = [];

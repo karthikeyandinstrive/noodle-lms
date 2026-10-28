@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Paperclip, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { EmptyState, formatDate, fullName, QueryState } from "@/components/common";
+import { EmptyState, fullName, QueryState } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, ApiError, errorMessage, uploadFile } from "@/lib/api";
+import { useFormat, useT } from "@/lib/i18n";
 import type { UserSummary } from "@/lib/types";
 import type { ActivityTypeUI, ActivityViewProps, SettingsFieldsProps } from "../activities/types";
 import { isAllowedEmbedSrc, normalizeEmbedUrl } from "./embed";
@@ -34,7 +35,13 @@ const myResultsKey = (id: string) => ["interactive", id, "results", "me"] as con
 // ─── Embeds ─────────────────────────────────────────────────────────────────
 
 function EmbedFrame({ src, title }: { src: string; title: string }) {
-  if (!isAllowedEmbedSrc(src)) return <p className="text-sm text-destructive">This embedded content is not from an allowed provider.</p>;
+  const t = useT();
+  if (!isAllowedEmbedSrc(src))
+    return (
+      <p className="text-sm text-destructive" role="alert">
+        {t("interactive.notAllowed", "This embedded content is not from an allowed provider.")}
+      </p>
+    );
   return (
     <div className="relative w-full overflow-hidden rounded-xl border bg-muted" style={{ aspectRatio: "16 / 9" }}>
       <iframe
@@ -57,6 +64,7 @@ type XapiMessage = { type: "lms-h5p:xapi"; rawScore: number | null; maxScore: nu
 
 function H5pPlayer({ activityId, title, canRecord }: { activityId: string; title: string; canRecord: boolean }) {
   const qc = useQueryClient();
+  const t = useT();
   const frame = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(480);
   const last = useRef<{ key: string; at: number } | null>(null);
@@ -72,7 +80,7 @@ function H5pPlayer({ activityId, title, canRecord }: { activityId: string; title
         body: { rawScore: m.rawScore, maxScore: m.maxScore, completed: m.completed, statement: m.statement },
       }),
     onSuccess: (r) => {
-      if (r.bestPercent !== null) toast.success(`Result saved · best score ${r.bestPercent}%`);
+      if (r.bestPercent !== null) toast.success(t("interactive.resultSaved", "Result saved · best score {percent}%", { percent: r.bestPercent }));
       void qc.invalidateQueries({ queryKey: myResultsKey(activityId) });
       void qc.invalidateQueries({ queryKey: ["activity", activityId] });
     },
@@ -128,15 +136,20 @@ function H5pPlayer({ activityId, title, canRecord }: { activityId: string; title
 }
 
 function MyResultsCard({ activityId }: { activityId: string }) {
+  const t = useT();
   const q = useQuery({ queryKey: myResultsKey(activityId), queryFn: () => api<MyResults>(`/interactive/${activityId}/results/me`) });
   if (!q.data || !q.data.attempts.length) return null;
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle>Your results</CardTitle>
+        <CardTitle>
+          <h2>{t("interactive.yourResults", "Your results")}</h2>
+        </CardTitle>
         <CardDescription>
-          {q.data.attempts.length} attempt{q.data.attempts.length === 1 ? "" : "s"}
-          {q.data.bestPercent !== null && <> · best score {q.data.bestPercent}%</>}
+          {q.data.attempts.length === 1
+            ? t("interactive.attempts.one", "{count} attempt", { count: q.data.attempts.length })
+            : t("interactive.attempts.other", "{count} attempts", { count: q.data.attempts.length })}
+          {q.data.bestPercent !== null && <> · {t("interactive.bestScore", "best score {percent}%", { percent: q.data.bestPercent })}</>}
         </CardDescription>
       </CardHeader>
     </Card>
@@ -144,25 +157,34 @@ function MyResultsCard({ activityId }: { activityId: string }) {
 }
 
 function ResultsTable({ activityId }: { activityId: string }) {
+  const t = useT();
+  const fmt = useFormat();
   const q = useQuery({ queryKey: resultsKey(activityId), queryFn: () => api<ResultRow[]>(`/interactive/${activityId}/results`) });
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Learner results</CardTitle>
+        <CardTitle>
+          <h2 id="interactive-results">{t("interactive.learnerResults", "Learner results")}</h2>
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <QueryState query={q}>
-          {q.data && !q.data.length && <EmptyState title="No results yet" description="Results appear when learners complete the content." />}
+          {q.data && !q.data.length && (
+            <EmptyState
+              title={t("interactive.noResults", "No results yet")}
+              description={t("interactive.noResultsHint", "Results appear when learners complete the content.")}
+            />
+          )}
           {q.data && q.data.length > 0 && (
             <div className="overflow-x-auto">
-              <Table>
+              <Table aria-labelledby="interactive-results">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Learner</TableHead>
-                    <TableHead className="text-right">Attempts</TableHead>
-                    <TableHead className="text-right">Best</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Last attempt</TableHead>
+                    <TableHead>{t("interactive.learner", "Learner")}</TableHead>
+                    <TableHead className="text-right">{t("interactive.attemptsHeader", "Attempts")}</TableHead>
+                    <TableHead className="text-right">{t("interactive.best", "Best")}</TableHead>
+                    <TableHead>{t("common.status", "Status")}</TableHead>
+                    <TableHead>{t("interactive.lastAttempt", "Last attempt")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -171,8 +193,14 @@ function ResultsTable({ activityId }: { activityId: string }) {
                       <TableCell className="font-medium">{fullName(r.user)}</TableCell>
                       <TableCell className="text-right">{r.attempts}</TableCell>
                       <TableCell className="text-right">{r.bestPercent === null ? "—" : `${r.bestPercent}%`}</TableCell>
-                      <TableCell>{r.completed ? <Badge>Completed</Badge> : <Badge variant="outline">In progress</Badge>}</TableCell>
-                      <TableCell>{formatDate(r.lastAttemptAt)}</TableCell>
+                      <TableCell>
+                        {r.completed ? (
+                          <Badge>{t("interactive.completed", "Completed")}</Badge>
+                        ) : (
+                          <Badge variant="outline">{t("interactive.inProgress", "In progress")}</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell>{fmt.date(r.lastAttemptAt)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -189,12 +217,17 @@ function View({ activity }: ActivityViewProps) {
   const s = (activity.settings ?? {}) as Partial<InteractiveSettings>;
   const canView = activity.capabilities["interactive:view"] === true;
   const canResults = activity.capabilities["interactive:view_results"] === true;
+  const t = useT();
   return (
     <div className="space-y-4">
-      {!canView && <p className="text-sm text-muted-foreground">You do not have access to this content.</p>}
+      {!canView && (
+        <p className="text-sm text-muted-foreground">{t("interactive.noAccess", "You do not have access to this content.")}</p>
+      )}
       {canView && s.kind === "embed" && s.embedUrl && <EmbedFrame src={s.embedUrl} title={activity.name} />}
       {canView && s.kind === "h5p" && s.h5p && <H5pPlayer activityId={activity.id} title={s.h5p.title || activity.name} canRecord={!canResults} />}
-      {canView && s.kind === "h5p" && !s.h5p && <p className="text-sm text-muted-foreground">No H5P package has been uploaded.</p>}
+      {canView && s.kind === "h5p" && !s.h5p && (
+        <p className="text-sm text-muted-foreground">{t("interactive.noPackage", "No H5P package has been uploaded.")}</p>
+      )}
       {canView && s.kind === "h5p" && !canResults && <MyResultsCard activityId={activity.id} />}
       {canResults && s.kind === "h5p" && <ResultsTable activityId={activity.id} />}
     </div>
@@ -203,12 +236,13 @@ function View({ activity }: ActivityViewProps) {
 
 // ─── Settings ───────────────────────────────────────────────────────────────
 
-function H5pUpload({ value, onChange }: { value: string | null; onChange: (id: string, name: string) => void }) {
+function H5pUpload({ value, onChange, labelledBy }: { value: string | null; onChange: (id: string, name: string) => void; labelledBy?: string }) {
+  const t = useT();
   const ref = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState<string | null>(null);
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby={labelledBy}>
       <input
         ref={ref}
         type="file"
@@ -219,7 +253,7 @@ function H5pUpload({ value, onChange }: { value: string | null; onChange: (id: s
           e.target.value = "";
           if (!picked) return;
           if (!/\.h5p$/i.test(picked.name)) {
-            toast.error("Choose an .h5p file");
+            toast.error(t("interactive.chooseH5p", "Choose an .h5p file"));
             return;
           }
           setBusy(true);
@@ -237,9 +271,16 @@ function H5pUpload({ value, onChange }: { value: string | null; onChange: (id: s
         }}
       />
       <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => ref.current?.click()}>
-        <Paperclip /> {busy ? "Uploading…" : value ? "Replace package" : "Upload .h5p package"}
+        <Paperclip aria-hidden />{" "}
+        {busy
+          ? t("interactive.uploading", "Uploading…")
+          : value
+            ? t("interactive.replacePackage", "Replace package")
+            : t("interactive.uploadPackage", "Upload .h5p package")}
       </Button>
-      {name && <span className="text-sm text-muted-foreground">{name}</span>}
+      <span className="text-sm text-muted-foreground" role="status">
+        {name}
+      </span>
     </div>
   );
 }
@@ -249,20 +290,21 @@ function SettingsFields({ value, onChange }: SettingsFieldsProps) {
   const url = (value.embedUrl as string | null) ?? "";
   const normalized = url.trim() ? normalizeEmbedUrl(url) : null;
   const h5p = value.h5p as InteractiveSettings["h5p"] | undefined;
+  const t = useT();
   return (
     <div className="space-y-4">
       <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">Content type</legend>
+        <legend className="text-sm font-medium">{t("interactive.contentType", "Content type")}</legend>
         <div className="flex flex-wrap gap-4">
           {(
             [
-              ["embed", "Embed (YouTube, Vimeo, H5P.com, Google, Loom)"],
-              ["h5p", "Upload an H5P package"],
+              ["embed", "interactive.kind.embed", "Embed (YouTube, Vimeo, H5P.com, Google, Loom)"],
+              ["h5p", "interactive.kind.h5p", "Upload an H5P package"],
             ] as const
-          ).map(([k, label]) => (
+          ).map(([k, key, label]) => (
             <label key={k} className="flex items-center gap-2 text-sm">
               <input type="radio" name="interactive-kind" value={k} checked={kind === k} onChange={() => onChange({ ...value, kind: k })} />
-              {label}
+              {t(key, label)}
             </label>
           ))}
         </div>
@@ -270,7 +312,7 @@ function SettingsFields({ value, onChange }: SettingsFieldsProps) {
 
       {kind === "embed" ? (
         <div className="space-y-1.5">
-          <Label htmlFor="embed-url">Share link</Label>
+          <Label htmlFor="embed-url">{t("interactive.shareLink", "Share link")}</Label>
           <Input
             id="embed-url"
             type="url"
@@ -282,27 +324,35 @@ function SettingsFields({ value, onChange }: SettingsFieldsProps) {
           />
           <p id="embed-url-help" className={url.trim() && !normalized ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
             {url.trim() && !normalized
-              ? "This link is not supported. Use YouTube, Vimeo, H5P.com, Google Docs/Slides/Sheets/Forms or Loom."
+              ? t("interactive.unsupportedLink", "This link is not supported. Use YouTube, Vimeo, H5P.com, Google Docs/Slides/Sheets/Forms or Loom.")
               : normalized
-                ? `Will embed: ${normalized}`
-                : "Paste the normal share link; it is converted to an embed automatically."}
+                ? t("interactive.willEmbed", "Will embed: {url}", { url: normalized.url })
+                : t("interactive.shareLinkHint", "Paste the normal share link; it is converted to an embed automatically.")}
           </p>
         </div>
       ) : (
         <div className="space-y-1.5">
-          <Label>H5P package</Label>
-          <H5pUpload value={(value.packageFileId as string | null) ?? null} onChange={(id) => onChange({ ...value, packageFileId: id })} />
+          <Label id="h5p-package-label">
+            {t("interactive.h5pPackage", "H5P package")}
+          </Label>
+          <H5pUpload
+            labelledBy="h5p-package-label"
+            value={(value.packageFileId as string | null) ?? null}
+            onChange={(id) => onChange({ ...value, packageFileId: id })}
+          />
           {h5p && (
             <p className="text-xs text-muted-foreground">
-              Current: {h5p.title} ({h5p.mainLibrary})
+              {t("interactive.currentPackage", "Current: {title} ({library})", { title: h5p.title, library: h5p.mainLibrary })}
             </p>
           )}
-          <p className="text-xs text-muted-foreground">Packages run in an isolated sandbox. Scores are reported to the gradebook automatically.</p>
+          <p className="text-xs text-muted-foreground">
+            {t("interactive.sandboxHint", "Packages run in an isolated sandbox. Scores are reported to the gradebook automatically.")}
+          </p>
         </div>
       )}
 
       <div className="space-y-1.5 sm:max-w-48">
-        <Label htmlFor="interactive-grade">Maximum grade</Label>
+        <Label htmlFor="interactive-grade">{t("interactive.maxGrade", "Maximum grade")}</Label>
         <Input
           id="interactive-grade"
           type="number"

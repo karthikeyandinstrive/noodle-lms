@@ -1,60 +1,62 @@
 # TODO / Pending
 
-Status as of 2026-10-28 (commit `e4150fc`, branch `feature/initial-lms`).
-Sorted by priority: **P0** blocks production, **P1** must do soon, **P2** improvements, **P3** future scope.
+Last updated 2026-10-28 (branch `feature/initial-lms`).
+Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3** future scope.
 
-## P0 — Before production
+## P0 — Before production (needs infrastructure or accounts, not code)
 
-- [ ] **Browser QA of every screen.** Only one flow was checked in the running app: assignment create → submit → grade → gradebook → completion. Click through all 56 routes as admin, teacher and student, on desktop and mobile.
-- [ ] **Test on real PostgreSQL.** Everything so far ran on the embedded PGlite. Run migrations, Row Level Security and the test suite against Postgres 16. The `lms_app` role needs `CREATEROLE`, or must be created by a DBA.
-- [ ] **Test the Docker Compose stack.** It hasn't been run because Docker isn't installed on this machine. Check the web + api + db + redis + minio images, the `migrate` job and the standalone Next build.
-- [ ] **Payments end to end.** Use Stripe and Razorpay test accounts: checkout, webhooks, refunds, and the redirect back ("Confirming your payment…").
-- [ ] **SSO login (SAML / OIDC).** Listed in the architecture doc and not implemented.
-- [ ] **Durable background jobs.** `core/jobs.ts` runs jobs in-process, so emails, certificate issuing and badge awards are lost on restart. Move to BullMQ on Redis.
-- [ ] **Reliable events.** Events are emitted after commit with no outbox, so a crash between commit and emit loses side effects (completion, certificates, notifications). Add a transactional outbox table and a worker.
-- [ ] **Production secrets and config.** Set `ENCRYPTION_KEY`, `URL_SIGNING_SECRET`, `SMTP_URL`, `REDIS_URL`, storage credentials and Stripe keys. Put TLS in front of the web app.
-- [ ] **Dependency vulnerabilities.** `npm install` reported 11 (2 critical). Run `npm audit` and fix them.
+- [ ] **Run on real PostgreSQL 16.** Locally everything ran on embedded PGlite. CI (`.github/workflows/ci.yml` → `postgres` job) runs migrations and the seed against Postgres once the repo has a remote. The `lms_app` role needs `CREATEROLE`, or a DBA must create it.
+- [ ] **Run the Docker Compose stack** (Docker isn't installed on the dev machine).
+- [ ] **Payments with Stripe/Razorpay test accounts**: checkout, webhooks, refunds.
+- [ ] **SSO against real identity providers** (Google / Entra ID / Okta, plus one SAML IdP). Tests only cover an in-process mock OIDC IdP and SAML metadata/redirect.
+- [ ] **LTI 1.3 against a real tool** (e.g. the IMS reference tool) and **SCORM** with real packages (SCORM Cloud samples).
+- [ ] **H5P player live check.** It loads `h5p-standalone@3.6.0` from jsDelivr with no SRI hash.
+- [ ] **Production secrets and TLS**: `ENCRYPTION_KEY`, `URL_SIGNING_SECRET`, `SMTP_URL`, `REDIS_URL` (required with more than one API instance), `METRICS_TOKEN`, storage and Stripe keys.
+- [ ] **Push to a remote** and open a PR, so CI runs.
 
 ## P1 — Soon
 
-- [ ] **H5P player.** Untested live. It loads `h5p-standalone@3.6.0` from jsDelivr without an SRI hash; add the hash or self-host it. Check that `X-Frame-Options: SAMEORIGIN` doesn't block inner iframes.
-- [ ] **Multi-factor authentication** (TOTP). The doc lists it as optional.
-- [ ] **Plan limits.** `billing/service.ts → assertWithinLimits()` exists but isn't called when users or courses are created.
-- [ ] **CI pipeline.** GitHub Actions running typecheck, lint, tests and build; Dependabot; `npm audit` on PRs.
-- [ ] **Web end-to-end tests** (Playwright) for login, enrolment, assignment, quiz attempt, forum post and checkout. The web app has no automated tests today.
-- [ ] **Scheduled jobs (cron).** "Assignment due soon" reminders, auto-finishing expired quiz attempts in the background, session cleanup and digest emails.
-- [ ] **Course completion re-evaluation.** It isn't recalculated when an activity's completion rule or visibility changes; it only updates on the learner's next event.
-- [ ] **Course-level permission overrides UI.** The API exists (`/contexts/:id/overrides`); the roles page only edits role defaults.
-- [ ] **Public URLs per tenant.** Certificate verify links, QR codes and Open Badges IDs use `APP_URL`, not the organization's subdomain or custom domain.
-- [ ] **Remote and PR.** The repo has no remote yet. Push the branch and open a PR.
-- [ ] **README.** Mention the known gaps (SSO, in-process jobs) in the security section.
+- [ ] **Manual browser QA of every screen.** Automated E2E covers login, permissions, assignment, grading and notifications. Admin, LTI, SSO, system, search, messages and Spanish were spot-checked; the rest haven't been clicked through.
+- [ ] Unread badge on the sidebar "Messages" link (`GET /messages/unread-count` exists).
+- [ ] Native-speaker review of the Spanish translations (2,100+ keys).
+- [ ] Translate text that comes from the API: capability descriptions, notification type labels, plan names.
+- [ ] Tracing (OpenTelemetry) and log shipping. Metrics (`/metrics`) and readiness (`/ready`) are done.
+- [ ] Daily notification digest email.
+- [ ] Remove the now-unused `participantNumbers`/`blindOrder` helpers in `modules/assignment/service.ts`.
 
 ## P2 — Improvements
 
-- [ ] **Rich-text editor** (e.g. Tiptap) for pages, forum posts, feedback and descriptions. Today these are plain textareas converted to HTML and sanitized on the server.
-- [ ] **Unicode fonts in certificate PDFs.** Standard Helvetica can't render non-Latin names.
-- [ ] **GIFT import/export** for the question bank. Only JSON is supported.
-- [ ] **Accessibility audit (WCAG 2.1 AA).** Links styled as buttons currently get `role="button"`; use `buttonVariants` on `<Link>` instead.
-- [ ] **Stable blind-marking numbers.** "Participant N" can shift when enrolments change.
-- [ ] **A notification type for grade overrides.** They currently reuse `assignment_graded` / `quiz_graded`.
-- [ ] **Observability.** Metrics (Prometheus), tracing (OpenTelemetry), log shipping and a readiness probe that checks the DB and Redis.
-- [ ] **Load testing** of quiz attempts, the gradebook and reports on large courses.
-- [ ] **Internationalisation (i18n)** of the UI. The `locale` field exists on users but strings are English only.
+- [ ] LTI Deep Linking, AGS line-item create/update and result service, course-scoped tools.
+- [ ] Multi-SCO SCORM packages and sequencing/navigation (only the first SCO plays today).
+- [ ] Moodle `.mbz` import of question banks, files and grade setup (structure, page/url/label/assign/forum/quiz settings import today).
+- [ ] Restore user data such as grades, submissions and forum posts from backups (it is exported but not restored).
+- [ ] Delete orphaned extracted package files when an H5P/SCORM package is replaced.
+- [ ] Search performance for staff in very large organizations (per-course capability checks).
+- [ ] Forum reply editor autofocus. Fix the hydration-safe greeting on the dashboard.
+- [ ] Load testing (quiz attempts, gradebook, reports on large courses).
 
-## P3 — Future scope (beyond the architecture doc)
+## P3 — Future scope
 
-- [ ] LTI 1.3 (tool consumer and provider)
-- [ ] SCORM / xAPI packages
-- [ ] Course backup / restore / import (including Moodle `.mbz`)
-- [ ] Direct messaging between users
-- [ ] Global search
+- [ ] Push notifications / websockets for messages (currently polled)
 - [ ] PWA / offline support
-- [ ] Native mobile app (bearer-token API already supported via `POST /auth/token`)
+- [ ] Native mobile app (the bearer-token API is ready: `POST /auth/token`, MFA via `/auth/mfa/verify?mode=token`)
+- [ ] xAPI / LRS integration
 
 ## Done
 
-- [x] Monorepo, API core, multi-tenancy with Row Level Security, context-based RBAC
-- [x] All modules from the architecture doc (API + UI) — see README
-- [x] OpenAPI docs, Docker Compose, `.env.example`, README, `docs/CONVENTIONS.md`
-- [x] 197 unit + integration tests passing; typecheck, lint and production builds clean
-- [x] Initial commit on `feature/initial-lms`
+- [x] Monorepo, API core, multi-tenancy with Postgres Row Level Security, context-based RBAC (with capability sync for new releases)
+- [x] Every module from the architecture doc (API + UI)
+- [x] **SSO** (OIDC with PKCE, SAML 2.0) with account linking, auto-provisioning and enforced mode with an admin break-glass
+- [x] **MFA** (TOTP, recovery codes, replay protection, org policy "require MFA for admins")
+- [x] **Durable background jobs** (Postgres queue, `SKIP LOCKED`) and a **transactional event outbox** with per-subscriber retries
+- [x] **Scheduler**: due-soon reminders, quiz auto-finish, cleanup. **System status** page, `/metrics`, `/ready`
+- [x] **LTI 1.3 / Advantage** platform (launch, AGS scores, NRPS, key rotation, JWKS)
+- [x] **SCORM 1.2 / 2004** player and runtime
+- [x] **Messaging** (direct, group, course; blocking, muting) and **global search**
+- [x] **Course backup/restore** (own format) plus best-effort **Moodle .mbz** import
+- [x] **i18n** (English + Spanish), **rich-text editor**, WCAG accessibility pass
+- [x] GIFT import/export, Unicode certificate PDFs, tenant-aware public URLs, stable blind-marking numbers
+- [x] Course- and activity-level permission override UI
+- [x] Plan limits enforced, completion re-evaluation when activity rules change
+- [x] Dependencies upgraded (zod 4, drizzle 0.45, nodemailer 10, vitest 5): **0 high/critical** vulnerabilities
+- [x] **396 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot

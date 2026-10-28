@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { blindOrder, canEditSubmission, isLate, isPastCutoff, lateBySeconds, submissionState } from "./rules";
+import { createHmac } from "node:crypto";
+import { blindOrder, canEditSubmission, participantNumbersFor, PARTICIPANT_NUMBER_MAX, PARTICIPANT_NUMBER_MIN, isLate, isPastCutoff, lateBySeconds, submissionState } from "./rules";
 
 const due = new Date("2026-03-01T12:00:00Z");
 
@@ -44,5 +45,53 @@ describe("blindOrder", () => {
   it("is deterministic and independent of input order", () => {
     const h = (s: string) => s.split("").reverse().join("");
     expect(blindOrder(["ab", "ba", "cc"], h)).toEqual(blindOrder(["cc", "ab", "ba"], h));
+  });
+});
+
+describe("participantNumbersFor", () => {
+  const mac = (m: string) => createHmac("sha256", "test-secret").update(m).digest().readUInt32BE(0);
+  const users = Array.from({ length: 300 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+
+  it("gives every participant a distinct 4-digit number", () => {
+    const nums = participantNumbersFor("asg-1", users, mac);
+    expect(nums.size).toBe(users.length);
+    const values = [...nums.values()];
+    expect(new Set(values).size).toBe(values.length);
+    for (const n of values) {
+      expect(n).toBeGreaterThanOrEqual(PARTICIPANT_NUMBER_MIN);
+      expect(n).toBeLessThanOrEqual(PARTICIPANT_NUMBER_MAX);
+    }
+  });
+
+  it("is deterministic and independent of input order and duplicates", () => {
+    const a = participantNumbersFor("asg-1", users, mac);
+    const b = participantNumbersFor("asg-1", [...users].reverse().concat(users.slice(0, 5)), mac);
+    expect([...b.entries()].sort()).toEqual([...a.entries()].sort());
+  });
+
+  it("keeps numbers stable when other people enrol or leave", () => {
+    const before = participantNumbersFor("asg-1", users.slice(0, 50), mac);
+    const after = participantNumbersFor("asg-1", users.slice(10, 50), mac);
+    for (const id of users.slice(10, 50)) expect(after.get(id)).toBe(before.get(id));
+  });
+
+  it("differs between assignments", () => {
+    const a = participantNumbersFor("asg-1", users.slice(0, 20), mac);
+    const b = participantNumbersFor("asg-2", users.slice(0, 20), mac);
+    expect(users.slice(0, 20).filter((u) => a.get(u) === b.get(u)).length).toBeLessThan(3);
+  });
+
+  it("resolves collisions deterministically by user id", () => {
+    // Every first candidate collides; the lower user id keeps it, the other probes on.
+    const colliding = (m: string) => (m.split(":").length === 2 ? 42 : m.length * 7919);
+    const nums = participantNumbersFor("a", ["u2", "u1"], colliding);
+    expect(nums.get("u1")).toBe(PARTICIPANT_NUMBER_MIN + 42);
+    expect(nums.get("u2")).not.toBe(PARTICIPANT_NUMBER_MIN + 42);
+    expect(participantNumbersFor("a", ["u1", "u2"], colliding)).toEqual(nums);
+  });
+
+  it("still terminates with a constant mac", () => {
+    const nums = participantNumbersFor("a", ["u1", "u2", "u3"], () => 0);
+    expect(new Set(nums.values()).size).toBe(3);
   });
 });

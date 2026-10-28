@@ -1,18 +1,7 @@
 /**
- * Online text is edited as plain text and stored as minimal HTML (the API
- * sanitizes it again). These helpers convert between the two.
+ * Plain-text helpers for HTML content (word counts, emptiness checks, and
+ * plain-text previews).
  */
-const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-export function plainToHtml(text: string) {
-  const trimmed = text.replace(/\r\n/g, "\n").trim();
-  if (!trimmed) return "";
-  return trimmed
-    .split(/\n{2,}/)
-    .map((p) => `<p>${escape(p).replace(/\n/g, "<br />")}</p>`)
-    .join("");
-}
-
 export function htmlToPlain(html: string | null | undefined) {
   if (!html) return "";
   const withBreaks = html

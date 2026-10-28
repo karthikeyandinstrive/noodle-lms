@@ -2,10 +2,32 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "next-themes";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError } from "@/lib/api";
+import { LocaleProvider, useLocale } from "@/lib/i18n";
+import { useSession } from "@/lib/session";
+
+/** Keeps `<html lang>` in sync with the active locale (the server renders "en"). */
+function HtmlLang() {
+  const locale = useLocale();
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+  return null;
+}
+
+/** Applies the signed-in user's locale (needs the query client, so it sits inside the provider). */
+function SessionLocale({ children }: { children: React.ReactNode }) {
+  const { user } = useSession();
+  return (
+    <LocaleProvider userLocale={user?.locale}>
+      <HtmlLang />
+      {children}
+    </LocaleProvider>
+  );
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [client] = useState(
@@ -24,10 +46,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
       <QueryClientProvider client={client}>
-        <TooltipProvider>
-          {children}
-          <Toaster richColors position="top-right" />
-        </TooltipProvider>
+        <SessionLocale>
+          <TooltipProvider>
+            {children}
+            <Toaster richColors position="top-right" />
+          </TooltipProvider>
+        </SessionLocale>
       </QueryClientProvider>
     </ThemeProvider>
   );

@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import type { Translate } from "@/lib/i18n";
 
 export type SubmissionStatus = "draft" | "submitted" | "graded" | "reopened";
 export type SubmissionFile = { id: string; filename: string; mimeType: string; size: number };
@@ -147,3 +148,6 @@ export const STATUS_LABEL: Record<SubmissionStatus, string> = {
   graded: "Graded",
   reopened: "Reopened",
 };
+
+/** Translated submission status label. */
+export const statusLabel = (t: Translate, status: SubmissionStatus) => t(`assignment.status.${status}`, STATUS_LABEL[status]);

@@ -1,3 +1,5 @@
+import type { Translate } from "@/lib/i18n";
+
 /** Admin API shapes (mirror the Zod response schemas in apps/api modules users/roles/organization/courses). */
 
 export type UserStatus = "active" | "suspended" | "pending";
@@ -96,10 +98,13 @@ export type Participant = {
 export type Group = { id: string; name: string; description: string | null; memberIds: string[] };
 
 export const ENROL_ROLES = [
-  { value: "student", label: "Student" },
-  { value: "teacher", label: "Non-editing teacher" },
-  { value: "editing_teacher", label: "Teacher" },
-  { value: "guest", label: "Guest" },
+  { value: "student", key: "admin.roles.enrol.student", label: "Student" },
+  { value: "teacher", key: "admin.roles.enrol.teacher", label: "Non-editing teacher" },
+  { value: "editing_teacher", key: "admin.roles.enrol.editingTeacher", label: "Teacher" },
+  { value: "guest", key: "admin.roles.enrol.guest", label: "Guest" },
 ] as const;
 
-export const roleLabel = (shortname: string) => ENROL_ROLES.find((r) => r.value === shortname)?.label ?? shortname;
+export const roleLabel = (shortname: string, t: Translate) => {
+  const r = ENROL_ROLES.find((x) => x.value === shortname);
+  return r ? t(r.key, r.label) : shortname;
+};

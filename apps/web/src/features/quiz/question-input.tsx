@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { round, type AttemptQuestion, type Response } from "./api";
 
@@ -34,6 +35,7 @@ export function QuestionInput({
   onChange: (r: Response) => void;
   readOnly?: boolean;
 }) {
+  const t = useT();
   const v = question.view;
   const name = `q-${question.slotId}`;
 
@@ -42,7 +44,7 @@ export function QuestionInput({
       const selected = value && "selected" in value ? value.selected : [];
       return (
         <fieldset className="space-y-2" disabled={readOnly}>
-          <legend className="mb-2 text-xs text-muted-foreground">{v.single ? "Select one:" : "Select one or more:"}</legend>
+          <legend className="mb-2 text-xs text-muted-foreground">{v.single ? t("quiz.selectOne", "Select one:") : t("quiz.selectMany", "Select one or more:")}</legend>
           {v.options.map((o, i) => (
             <label key={o.id} className={cn(choiceClass, readOnly && "cursor-default")}>
               <input
@@ -62,8 +64,12 @@ export function QuestionInput({
             </label>
           ))}
           {v.single && selected.length > 0 && !readOnly && (
-            <button type="button" className="text-xs text-muted-foreground underline" onClick={() => onChange(null)}>
-              Clear my choice
+            <button
+              type="button"
+              className="rounded-sm text-xs text-muted-foreground underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              onClick={() => onChange(null)}
+            >
+              {t("quiz.clearChoice", "Clear my choice")}
             </button>
           )}
         </fieldset>
@@ -73,11 +79,11 @@ export function QuestionInput({
       const current = value && "value" in value && typeof value.value === "boolean" ? value.value : null;
       return (
         <fieldset className="grid gap-2 sm:grid-cols-2" disabled={readOnly}>
-          <legend className="sr-only">True or false</legend>
+          <legend className="sr-only">{t("quiz.trueOrFalse", "True or false")}</legend>
           {[true, false].map((b) => (
             <label key={String(b)} className={choiceClass}>
               <input type="radio" name={name} className="mt-0.5 accent-primary" checked={current === b} onChange={() => onChange({ value: b })} />
-              {b ? "True" : "False"}
+              {b ? t("quiz.true", "True") : t("quiz.false", "False")}
             </label>
           ))}
         </fieldset>
@@ -88,7 +94,7 @@ export function QuestionInput({
       const text = value && "text" in value ? value.text : value && "value" in value && typeof value.value === "string" ? value.value : "";
       return (
         <div className="max-w-sm space-y-1.5">
-          <Label htmlFor={name}>Answer</Label>
+          <Label htmlFor={name}>{t("quiz.answer", "Answer")}</Label>
           <Input
             id={name}
             readOnly={readOnly}
@@ -103,12 +109,21 @@ export function QuestionInput({
     case "essay": {
       const text = value && "text" in value ? value.text : (v.responseTemplate ?? "");
       const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+      // Essay responses are plain text in the API ({ text } response, not sanitized as HTML), so this stays a textarea.
       return (
         <div className="space-y-1.5">
-          <Label htmlFor={name}>Your answer</Label>
-          <Textarea id={name} rows={10} readOnly={readOnly} value={text} onChange={(e) => onChange({ text: e.target.value })} />
-          <p className={cn("text-xs text-muted-foreground", v.minWords && words < v.minWords && "text-amber-600")}>
-            {words} words{v.minWords ? ` (minimum ${v.minWords})` : ""}
+          <Label htmlFor={name}>{t("quiz.yourAnswer", "Your answer")}</Label>
+          <Textarea
+            id={name}
+            rows={10}
+            readOnly={readOnly}
+            aria-describedby={`${name}-words`}
+            value={text}
+            onChange={(e) => onChange({ text: e.target.value })}
+          />
+          <p id={`${name}-words`} className={cn("text-xs text-muted-foreground", v.minWords && words < v.minWords && "text-amber-600")}>
+            {words === 1 ? t("quiz.words.one", "{count} word", { count: words }) : t("quiz.words.other", "{count} words", { count: words })}
+            {v.minWords ? ` ${t("quiz.minWords", "(minimum {count})", { count: v.minWords })}` : ""}
           </p>
         </div>
       );
@@ -129,7 +144,7 @@ export function QuestionInput({
                 value={matches[s.id] ?? ""}
                 onChange={(e) => onChange({ matches: { ...matches, [s.id]: e.target.value } })}
               >
-                <option value="">Choose…</option>
+                <option value="">{t("quiz.choose", "Choose…")}</option>
                 {v.choices.map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -144,11 +159,11 @@ export function QuestionInput({
   }
 }
 
-const STATE: Record<NonNullable<AttemptQuestion["state"]>, { label: string; icon: typeof CheckCircle2; className: string }> = {
-  correct: { label: "Correct", icon: CheckCircle2, className: "text-green-600 dark:text-green-500" },
-  partial: { label: "Partially correct", icon: CircleAlert, className: "text-amber-600 dark:text-amber-500" },
-  incorrect: { label: "Incorrect", icon: XCircle, className: "text-destructive" },
-  needs_grading: { label: "Requires grading", icon: CircleDashed, className: "text-muted-foreground" },
+const STATE: Record<NonNullable<AttemptQuestion["state"]>, { key: string; label: string; icon: typeof CheckCircle2; className: string }> = {
+  correct: { key: "quiz.state.correct", label: "Correct", icon: CheckCircle2, className: "text-green-600 dark:text-green-500" },
+  partial: { key: "quiz.state.partial", label: "Partially correct", icon: CircleAlert, className: "text-amber-600 dark:text-amber-500" },
+  incorrect: { key: "quiz.state.incorrect", label: "Incorrect", icon: XCircle, className: "text-destructive" },
+  needs_grading: { key: "quiz.state.needsGrading", label: "Requires grading", icon: CircleDashed, className: "text-muted-foreground" },
 };
 
 /** One question card: header, text, input and (when released) review information. */
@@ -165,23 +180,26 @@ export function QuestionCard({
   readOnly?: boolean;
   children?: React.ReactNode;
 }) {
+  const t = useT();
   const st = question.state ? STATE[question.state] : null;
   return (
     <section className="space-y-4 rounded-xl border p-4 sm:p-5" aria-labelledby={`qh-${question.slotId}`}>
       <header className="flex flex-wrap items-center justify-between gap-2">
         <h2 id={`qh-${question.slotId}`} className="font-medium">
-          Question {question.number}
+          {t("quiz.questionNumber", "Question {number}", { number: question.number })}
           {question.name && <span className="ml-2 text-sm font-normal text-muted-foreground">{question.name}</span>}
         </h2>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {st && (
             <span className={cn("inline-flex items-center gap-1 font-medium", st.className)}>
-              <st.icon className="size-4" /> {st.label}
+              <st.icon aria-hidden className="size-4" /> {t(st.key, st.label)}
             </span>
           )}
           <Badge variant="outline">
             {question.mark !== undefined && question.mark !== null ? `${round(question.mark)} / ` : ""}
-            {round(question.maxMark)} mark{question.maxMark === 1 ? "" : "s"}
+            {question.maxMark === 1
+              ? t("quiz.marks.one", "{count} mark", { count: round(question.maxMark) })
+              : t("quiz.marks.other", "{count} marks", { count: round(question.maxMark) })}
           </Badge>
         </div>
       </header>
@@ -193,12 +211,12 @@ export function QuestionCard({
           {question.generalFeedback && <HtmlContent html={question.generalFeedback} />}
           {question.rightAnswer && (
             <p>
-              <span className="font-medium">Correct answer:</span> {question.rightAnswer}
+              <span className="font-medium">{t("quiz.correctAnswer", "Correct answer:")}</span> {question.rightAnswer}
             </p>
           )}
           {question.comment && (
             <div>
-              <span className="font-medium">Teacher comment:</span>
+              <span className="font-medium">{t("quiz.teacherComment", "Teacher comment:")}</span>
               <HtmlContent html={question.comment} />
             </div>
           )}

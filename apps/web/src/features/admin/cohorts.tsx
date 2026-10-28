@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, ErrorAlert, PageHeader, QueryState, fullName } from "@/components/common";
 import { api, errorMessage, type Paged } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import type { Course } from "@/lib/types";
 import { ConfirmDialog, Field, NativeSelect, RequireCapability, useDebounced } from "./shared";
 import type { Cohort, CohortMember } from "./types";
@@ -20,6 +21,7 @@ const cohortsKey = ["admin", "cohorts"] as const;
 export const useCohorts = (enabled = true) => useQuery({ queryKey: cohortsKey, queryFn: () => api<Cohort[]>("/cohorts"), enabled });
 
 function CohortFormDialog({ cohort, open, onOpenChange }: { cohort: Cohort | null; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const t = useT();
   const qc = useQueryClient();
   const [v, setV] = useState({ name: cohort?.name ?? "", idnumber: cohort?.idnumber ?? "", description: cohort?.description ?? "" });
   const [error, setError] = useState<unknown>(null);
@@ -29,7 +31,7 @@ function CohortFormDialog({ cohort, open, onOpenChange }: { cohort: Cohort | nul
       return cohort ? api(`/cohorts/${cohort.id}`, { method: "PATCH", body }) : api("/cohorts", { body });
     },
     onSuccess: () => {
-      toast.success(cohort ? "Cohort updated" : "Cohort created");
+      toast.success(cohort ? t("admin.cohorts.updated", "Cohort updated") : t("admin.cohorts.created", "Cohort created"));
       void qc.invalidateQueries({ queryKey: cohortsKey });
       onOpenChange(false);
     },
@@ -39,8 +41,8 @@ function CohortFormDialog({ cohort, open, onOpenChange }: { cohort: Cohort | nul
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{cohort ? "Edit cohort" : "New cohort"}</DialogTitle>
-          <DialogDescription>Cohorts are site-wide groups of users that can be enrolled into courses together.</DialogDescription>
+          <DialogTitle>{cohort ? t("admin.cohorts.editCohort", "Edit cohort") : t("admin.cohorts.newCohort", "New cohort")}</DialogTitle>
+          <DialogDescription>{t("admin.cohorts.formHelp", "Cohorts are site-wide groups of users that can be enrolled into courses together.")}</DialogDescription>
         </DialogHeader>
         <form
           className="space-y-4"
@@ -51,21 +53,21 @@ function CohortFormDialog({ cohort, open, onOpenChange }: { cohort: Cohort | nul
           }}
         >
           {error ? <ErrorAlert error={error} /> : null}
-          <Field id="c-name" label="Name">
+          <Field id="c-name" label={t("common.name", "Name")}>
             <Input id="c-name" required maxLength={255} value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} />
           </Field>
-          <Field id="c-idn" label="ID number" hint="Optional identifier from another system.">
+          <Field id="c-idn" label={t("admin.cohorts.idnumber", "ID number")} hint={t("admin.cohorts.idnumberHint", "Optional identifier from another system.")}>
             <Input id="c-idn" maxLength={100} value={v.idnumber} onChange={(e) => setV({ ...v, idnumber: e.target.value })} />
           </Field>
-          <Field id="c-desc" label="Description">
+          <Field id="c-desc" label={t("common.description", "Description")}>
             <Textarea id="c-desc" rows={3} maxLength={5000} value={v.description} onChange={(e) => setV({ ...v, description: e.target.value })} />
           </Field>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
+              {t("common.cancel", "Cancel")}
             </Button>
             <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? "Saving…" : "Save"}
+              {save.isPending ? t("common.saving", "Saving…") : t("common.save", "Save")}
             </Button>
           </DialogFooter>
         </form>
@@ -75,6 +77,7 @@ function CohortFormDialog({ cohort, open, onOpenChange }: { cohort: Cohort | nul
 }
 
 function MembersDialog({ cohort, open, onOpenChange }: { cohort: Cohort; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const t = useT();
   const qc = useQueryClient();
   const key = [...cohortsKey, cohort.id, "members"];
   const members = useQuery({ queryKey: key, queryFn: () => api<CohortMember[]>(`/cohorts/${cohort.id}/members`), enabled: open });
@@ -90,22 +93,22 @@ function MembersDialog({ cohort, open, onOpenChange }: { cohort: Cohort; open: b
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{cohort.name} members</DialogTitle>
+          <DialogTitle>{t("admin.cohorts.membersTitle", "{name} members", { name: cohort.name })}</DialogTitle>
         </DialogHeader>
-        <UserPicker label="Add members" exclude={members.data?.map((m) => m.id)} onPick={(u) => change.mutate({ add: [u.id] })} />
+        <UserPicker label={t("admin.cohorts.addMembers", "Add members")} exclude={members.data?.map((m) => m.id)} onPick={(u) => change.mutate({ add: [u.id] })} />
         <QueryState query={members}>
           {members.data?.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No members yet.</p>
+            <p className="text-sm text-muted-foreground">{t("admin.cohorts.noMembers", "No members yet.")}</p>
           ) : (
-            <ul className="max-h-72 divide-y overflow-auto rounded-md border">
+            <ul className="max-h-72 divide-y overflow-auto rounded-md border" aria-label={t("admin.cohorts.members", "Members")}>
               {members.data?.map((m) => (
                 <li key={m.id} className="flex items-center justify-between gap-2 p-2 text-sm">
                   <div className="min-w-0">
                     <div className="truncate font-medium">{fullName(m)}</div>
                     <div className="truncate text-xs text-muted-foreground">{m.email}</div>
                   </div>
-                  <Button variant="ghost" size="icon-sm" aria-label={`Remove ${fullName(m)}`} disabled={change.isPending} onClick={() => change.mutate({ remove: [m.id] })}>
-                    <X />
+                  <Button variant="ghost" size="icon-sm" aria-label={t("admin.shared.removeName", "Remove {name}", { name: fullName(m) })} disabled={change.isPending} onClick={() => change.mutate({ remove: [m.id] })}>
+                    <X aria-hidden />
                   </Button>
                 </li>
               ))}
@@ -131,6 +134,7 @@ export function CohortEnrolDialog({
   courseId?: string;
   onDone?: () => void;
 }) {
+  const t = useT();
   const [selectedCohort, setSelectedCohort] = useState(cohortId ?? "");
   const [selectedCourse, setSelectedCourse] = useState(courseId ?? "");
   const [search, setSearch] = useState("");
@@ -144,7 +148,7 @@ export function CohortEnrolDialog({
   const enrol = useMutation({
     mutationFn: () => api<{ enrolled: number }>(`/courses/${selectedCourse}/cohort-enrol`, { body: { cohortId: selectedCohort } }),
     onSuccess: (r) => {
-      toast.success(`${r.enrolled} new enrolment${r.enrolled === 1 ? "" : "s"}`);
+      toast.success(r.enrolled === 1 ? t("admin.cohorts.enrolled.one", "1 new enrolment") : t("admin.cohorts.enrolled.other", "{count} new enrolments", { count: r.enrolled }));
       onDone?.();
       onOpenChange(false);
     },
@@ -154,8 +158,8 @@ export function CohortEnrolDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Enrol cohort</DialogTitle>
-          <DialogDescription>Every current member is enrolled as a student. Members already enrolled are left unchanged.</DialogDescription>
+          <DialogTitle>{t("admin.cohorts.enrolCohort", "Enrol cohort")}</DialogTitle>
+          <DialogDescription>{t("admin.cohorts.enrolHelp", "Every current member is enrolled as a student. Members already enrolled are left unchanged.")}</DialogDescription>
         </DialogHeader>
         <form
           className="space-y-4"
@@ -165,12 +169,12 @@ export function CohortEnrolDialog({
           }}
         >
           {!cohortId && (
-            <Field id="ce-cohort" label="Cohort">
+            <Field id="ce-cohort" label={t("admin.cohorts.cohort", "Cohort")}>
               {cohorts.isError ? (
                 <ErrorAlert error={cohorts.error} />
               ) : (
                 <NativeSelect id="ce-cohort" required value={selectedCohort} onChange={(e) => setSelectedCohort(e.target.value)}>
-                  <option value="">Choose a cohort…</option>
+                  <option value="">{t("admin.cohorts.chooseCohort", "Choose a cohort…")}</option>
                   {cohorts.data?.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name} ({c.memberCount})
@@ -182,12 +186,12 @@ export function CohortEnrolDialog({
           )}
           {!courseId && (
             <>
-              <Field id="ce-search" label="Find course">
-                <Input id="ce-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Course name" />
+              <Field id="ce-search" label={t("admin.cohorts.findCourse", "Find course")}>
+                <Input id="ce-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("admin.cohorts.courseName", "Course name")} />
               </Field>
-              <Field id="ce-course" label="Course">
+              <Field id="ce-course" label={t("admin.cohorts.course", "Course")}>
                 <NativeSelect id="ce-course" required value={selectedCourse} onChange={(e) => setSelectedCourse(e.target.value)}>
-                  <option value="">Choose a course…</option>
+                  <option value="">{t("admin.cohorts.chooseCourse", "Choose a course…")}</option>
                   {courses.data?.items.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.fullname}
@@ -199,10 +203,10 @@ export function CohortEnrolDialog({
           )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
+              {t("common.cancel", "Cancel")}
             </Button>
             <Button type="submit" disabled={!selectedCohort || !selectedCourse || enrol.isPending}>
-              {enrol.isPending ? "Enrolling…" : "Enrol"}
+              {enrol.isPending ? t("admin.shared.enrolling", "Enrolling…") : t("admin.shared.enrol", "Enrol")}
             </Button>
           </DialogFooter>
         </form>
@@ -212,6 +216,7 @@ export function CohortEnrolDialog({
 }
 
 export function CohortsAdmin() {
+  const t = useT();
   const qc = useQueryClient();
   const cohorts = useCohorts();
   const [editing, setEditing] = useState<Cohort | null | "new">(null);
@@ -221,7 +226,7 @@ export function CohortsAdmin() {
   const remove = useMutation({
     mutationFn: (id: string) => api(`/cohorts/${id}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Cohort deleted");
+      toast.success(t("admin.cohorts.deleted", "Cohort deleted"));
       setDeleting(null);
       void qc.invalidateQueries({ queryKey: cohortsKey });
     },
@@ -230,17 +235,17 @@ export function CohortsAdmin() {
   return (
     <RequireCapability capability="cohort:manage">
       <PageHeader
-        title="Cohorts"
-        description="Site-wide groups of users, e.g. a department or an intake."
+        title={t("admin.cohorts.title", "Cohorts")}
+        description={t("admin.cohorts.description", "Site-wide groups of users, e.g. a department or an intake.")}
         actions={
           <Button onClick={() => setEditing("new")}>
-            <Plus /> New cohort
+            <Plus aria-hidden /> {t("admin.cohorts.newCohort", "New cohort")}
           </Button>
         }
       />
       <QueryState query={cohorts}>
         {cohorts.data?.length === 0 ? (
-          <EmptyState title="No cohorts yet" description="Create a cohort to enrol many users into courses at once." />
+          <EmptyState title={t("admin.cohorts.empty", "No cohorts yet")} description={t("admin.cohorts.emptyHelp", "Create a cohort to enrol many users into courses at once.")} />
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {cohorts.data?.map((c) => (
@@ -248,7 +253,7 @@ export function CohortsAdmin() {
                 <CardHeader>
                   <CardTitle className="truncate">{c.name}</CardTitle>
                   <CardDescription>
-                    {c.memberCount} member{c.memberCount === 1 ? "" : "s"}
+                    {c.memberCount === 1 ? t("admin.shared.memberCount.one", "1 member") : t("admin.shared.memberCount.other", "{count} members", { count: c.memberCount })}
                     {c.idnumber && <> · {c.idnumber}</>}
                   </CardDescription>
                 </CardHeader>
@@ -256,16 +261,16 @@ export function CohortsAdmin() {
                   {c.description && <p className="line-clamp-3 text-sm text-muted-foreground">{c.description}</p>}
                   <div className="flex flex-wrap gap-1">
                     <Button size="sm" variant="outline" onClick={() => setMembers(c)}>
-                      <Users /> Members
+                      <Users aria-hidden /> {t("admin.cohorts.members", "Members")}
                     </Button>
                     <Button size="sm" variant="outline" onClick={() => setEnrolling(c)}>
-                      <GraduationCap /> Enrol in course
+                      <GraduationCap aria-hidden /> {t("admin.cohorts.enrolInCourse", "Enrol in course")}
                     </Button>
-                    <Button size="icon-sm" variant="ghost" aria-label={`Edit ${c.name}`} onClick={() => setEditing(c)}>
-                      <Pencil />
+                    <Button size="icon-sm" variant="ghost" aria-label={t("admin.shared.editName", "Edit {name}", { name: c.name })} onClick={() => setEditing(c)}>
+                      <Pencil aria-hidden />
                     </Button>
-                    <Button size="icon-sm" variant="ghost" aria-label={`Delete ${c.name}`} onClick={() => setDeleting(c)}>
-                      <Trash2 />
+                    <Button size="icon-sm" variant="ghost" aria-label={t("admin.shared.deleteName", "Delete {name}", { name: c.name })} onClick={() => setDeleting(c)}>
+                      <Trash2 aria-hidden />
                     </Button>
                   </div>
                 </CardContent>
@@ -280,9 +285,9 @@ export function CohortsAdmin() {
       <ConfirmDialog
         open={!!deleting}
         onOpenChange={(o) => !o && setDeleting(null)}
-        title={`Delete ${deleting?.name}?`}
-        description="Members keep their accounts and existing enrolments."
-        confirmLabel="Delete cohort"
+        title={t("admin.shared.deleteTitle", "Delete {name}?", { name: deleting?.name ?? "" })}
+        description={t("admin.cohorts.deleteDescription", "Members keep their accounts and existing enrolments.")}
+        confirmLabel={t("admin.cohorts.deleteCohort", "Delete cohort")}
         destructive
         pending={remove.isPending}
         onConfirm={() => deleting && remove.mutate(deleting.id)}

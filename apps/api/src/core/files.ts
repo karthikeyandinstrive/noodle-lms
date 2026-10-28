@@ -14,7 +14,8 @@ const ALLOWED_MIME = [
   /^video\/(mp4|webm)$/,
   /^audio\/(mpeg|ogg|wav|webm)$/,
   /^application\/pdf$/,
-  /^application\/zip$/,
+  // Windows browsers report .zip as x-zip-compressed.
+  /^application\/(x-)?zip(-compressed)?$/,
   /^application\/(x-)?h5p(\+zip)?$/,
   /^application\/vnd\.openxmlformats-officedocument\./,
   /^application\/(msword|vnd\.ms-excel|vnd\.ms-powerpoint)$/,

@@ -37,7 +37,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           mimeType: z.string().min(3).max(200),
           size: z.number().int().positive().max(MAX_UPLOAD_BYTES),
         }),
-        response: { 201: z.object({ file: zFile, uploadUrl: z.string(), method: z.literal("PUT"), headers: z.record(z.string()) }) },
+        response: { 201: z.object({ file: zFile, uploadUrl: z.string(), method: z.literal("PUT"), headers: z.record(z.string(), z.string()) }) },
       },
     },
     async (req, reply) => {

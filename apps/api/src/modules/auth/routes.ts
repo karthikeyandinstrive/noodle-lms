@@ -7,8 +7,7 @@ import { clearSessionCookie, createSession, requireUser, setSessionCookie } from
 import { audit } from "../../core/audit";
 import { forbidden, must, unauthorized } from "../../core/errors";
 import { emit } from "../../core/events";
-import { enqueue } from "../../core/jobs";
-import { sendMail } from "../../core/mail";
+import { queueMail } from "../../core/mail";
 import { ok, zDate, zId, zOk } from "../../core/schemas";
 import { config } from "../../config";
 import {
@@ -18,8 +17,11 @@ import {
   registerUser,
   revokeSessions,
   siteCapabilities,
+  throwIfDeferred,
   zPassword,
 } from "./service";
+import { assertWithinLimits } from "../billing/service";
+import { mfaEnrollmentRequired } from "../mfa/service";
 
 const zMe = z.object({
   id: zId,
@@ -32,6 +34,10 @@ const zMe = z.object({
 
 const zCredentials = z.object({ email: z.string().email().max(320), password: z.string().min(1).max(200) });
 
+/** Second step needed: POST /auth/mfa/verify with this token (5 minutes, single use). */
+export const zMfaRequired = z.object({ mfaRequired: z.literal(true), challengeToken: z.string() });
+const zLoginOk = z.object({ user: zMe, mfaEnrollmentRequired: z.boolean().optional() });
+
 /** Strict limits on credential endpoints (brute force / credential stuffing). */
 const authLimit = { rateLimit: { max: 10, timeWindow: "1 minute" } };
 
@@ -40,12 +46,18 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     "/login",
     {
       config: authLimit,
-      schema: { tags: ["Auth"], summary: "Sign in (sets httpOnly session cookie)", body: zCredentials, response: { 200: z.object({ user: zMe }) } },
+      schema: {
+        tags: ["Auth"],
+        summary: "Sign in (sets httpOnly session cookie, or returns an MFA challenge)",
+        body: zCredentials,
+        response: { 200: z.union([zLoginOk, zMfaRequired]) },
+      },
     },
     async (req, reply) => {
-      const { user, token } = await req.tenant((tx) => authenticate(tx, req, req.body.email, req.body.password));
-      setSessionCookie(reply, token);
-      return { user };
+      const outcome = throwIfDeferred(await req.tenant((tx) => authenticate(tx, req, req.body.email, req.body.password)));
+      if (outcome.kind === "mfa") return { mfaRequired: true as const, challengeToken: outcome.challengeToken };
+      setSessionCookie(reply, outcome.token);
+      return { user: outcome.user, ...(outcome.mfaEnrollmentRequired ? { mfaEnrollmentRequired: true } : {}) };
     },
   );
 
@@ -55,14 +67,15 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
       config: authLimit,
       schema: {
         tags: ["Auth"],
-        summary: "Sign in and receive a bearer token (mobile / API clients)",
+        summary: "Sign in and receive a bearer token (mobile / API clients), or an MFA challenge",
         body: zCredentials,
-        response: { 200: z.object({ token: z.string(), user: zMe }) },
+        response: { 200: z.union([z.object({ token: z.string(), user: zMe, mfaEnrollmentRequired: z.boolean().optional() }), zMfaRequired]) },
       },
     },
     async (req) => {
-      const { user, token } = await req.tenant((tx) => authenticate(tx, req, req.body.email, req.body.password));
-      return { token, user };
+      const outcome = throwIfDeferred(await req.tenant((tx) => authenticate(tx, req, req.body.email, req.body.password)));
+      if (outcome.kind === "mfa") return { mfaRequired: true as const, challengeToken: outcome.challengeToken };
+      return { token: outcome.token, user: outcome.user, ...(outcome.mfaEnrollmentRequired ? { mfaEnrollmentRequired: true } : {}) };
     },
   );
 
@@ -96,18 +109,22 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           200: z.object({
             user: zMe.nullable(),
             organization: z.object({ id: zId, name: z.string(), slug: z.string(), selfRegistration: z.boolean(), systemContextId: zId.nullable() }),
-            capabilities: z.record(z.boolean()),
+            capabilities: z.record(z.string(), z.boolean()),
+            /** The organization requires MFA for administrators and this user hasn't enrolled yet. */
+            mfaEnrollmentRequired: z.boolean(),
           }),
         },
       },
     },
     async (req) => {
-      const { capabilities, systemContextId } = req.user
+      const user = req.user;
+      const { capabilities, systemContextId, enrollmentRequired } = user
         ? await req.tenant(async (tx) => ({
             capabilities: await siteCapabilities(tx, req),
             systemContextId: (await getSystemContext(tx, req.org.id)).id,
+            enrollmentRequired: await mfaEnrollmentRequired(tx, req.org, user.id),
           }))
-        : { capabilities: {}, systemContextId: null };
+        : { capabilities: {}, systemContextId: null, enrollmentRequired: false };
       return {
         user: req.user,
         organization: {
@@ -118,6 +135,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           systemContextId,
         },
         capabilities: capabilities as Record<string, boolean>,
+        mfaEnrollmentRequired: enrollmentRequired,
       };
     },
   );
@@ -141,15 +159,14 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     async (req, reply) => {
       if (req.org.settings.selfRegistration !== true) throw forbidden("Self-registration is disabled");
       const user = await req.tenant(async (tx) => {
+        await assertWithinLimits(tx, req.org.id, "users");
         const created = await registerUser(tx, req, req.body);
         const token = await issueAuthToken(tx, { organizationId: req.org.id, userId: created.id, purpose: "email_verify", ttlMinutes: 60 * 24 });
-        enqueue("verify-email", () =>
-          sendMail({
+        await queueMail(tx, req.org.id, {
             to: created.email,
             subject: `Confirm your email for ${req.org.name}`,
             text: `Confirm your email: ${config.APP_URL}/verify-email?token=${token}`,
-          }),
-        );
+          });
         return created;
       });
       await emit("user.created", { organizationId: req.org.id, userId: user.id });
@@ -191,13 +208,11 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           .limit(1);
         if (!user) return;
         const token = await issueAuthToken(tx, { organizationId: req.org.id, userId: user.id, purpose: "password_reset", ttlMinutes: 30 });
-        enqueue("password-reset-email", () =>
-          sendMail({
+        await queueMail(tx, req.org.id, {
             to: user.email,
             subject: "Reset your password",
             text: `Reset your password (valid for 30 minutes): ${config.APP_URL}/reset-password?token=${token}\n\nIf you did not request this, ignore this email.`,
-          }),
-        );
+          });
       });
       return ok;
     },

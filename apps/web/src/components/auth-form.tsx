@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { errorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { ErrorAlert } from "./common";
 
 type Field = { name: string; label: string; type?: string; autoComplete?: string; required?: boolean; minLength?: number };
@@ -28,6 +29,7 @@ export function AuthForm({
   footer?: React.ReactNode;
   success?: string | null;
 }) {
+  const t = useT();
   const [error, setError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
 
@@ -63,7 +65,7 @@ export function AuthForm({
         </CardContent>
         <CardFooter className="mt-4 flex flex-col gap-3">
           <Button type="submit" className="w-full" disabled={pending}>
-            {pending ? "Please wait…" : submitLabel}
+            {pending ? t("common.pleaseWait", "Please wait…") : submitLabel}
           </Button>
           {footer}
         </CardFooter>

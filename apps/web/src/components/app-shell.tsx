@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Activity,
   Award,
   BarChart3,
   Bell,
@@ -12,10 +13,15 @@ import {
   FolderTree,
   GraduationCap,
   HardDrive,
+  KeyRound,
+  Languages,
   LayoutDashboard,
   LibraryBig,
   LogOut,
   Medal,
+  MessageSquare,
+  Plug,
+  Search,
   ScrollText,
   ShieldCheck,
   User,
@@ -26,16 +32,21 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -55,51 +66,95 @@ import {
 } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { useLogout, useSession } from "@/lib/session";
+import { LOCALES, type Locale, setStoredLocale, useLocale, useT } from "@/lib/i18n";
+import { meKey, useLogout, useSession } from "@/lib/session";
 
-type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string }>; capability?: string };
+type NavItem = { href: string; key: string; label: string; icon: React.ComponentType<{ className?: string }>; capability?: string };
 
 const LEARN: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/courses?mine=1", label: "My courses", icon: BookOpen },
-  { href: "/catalog", label: "Course catalog", icon: LibraryBig },
-  { href: "/calendar", label: "Calendar", icon: CalendarDays },
-  { href: "/grades", label: "My grades", icon: ClipboardList },
-  { href: "/achievements", label: "Certificates & badges", icon: Medal },
+  { href: "/dashboard", key: "nav.dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/courses?mine=1", key: "nav.myCourses", label: "My courses", icon: BookOpen },
+  { href: "/catalog", key: "nav.catalog", label: "Course catalog", icon: LibraryBig },
+  { href: "/messages", key: "nav.messages", label: "Messages", icon: MessageSquare },
+  { href: "/calendar", key: "nav.calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/grades", key: "nav.grades", label: "My grades", icon: ClipboardList },
+  { href: "/achievements", key: "nav.achievements", label: "Certificates & badges", icon: Medal },
 ];
 
 const ADMIN: NavItem[] = [
-  { href: "/admin/users", label: "Users", icon: Users, capability: "user:view" },
-  { href: "/admin/cohorts", label: "Cohorts", icon: UsersRound, capability: "cohort:manage" },
-  { href: "/admin/roles", label: "Roles & permissions", icon: ShieldCheck, capability: "role:manage" },
-  { href: "/admin/categories", label: "Categories", icon: FolderTree, capability: "category:manage" },
-  { href: "/admin/reports", label: "Reports", icon: BarChart3, capability: "report:view_site" },
-  { href: "/admin/certificates", label: "Certificate templates", icon: Award, capability: "certificate:manage_templates" },
-  { href: "/admin/badges", label: "Site badges", icon: Medal, capability: "badge:manage" },
-  { href: "/admin/organization", label: "Organization", icon: Building2, capability: "site:config" },
-  { href: "/admin/storage", label: "File storage", icon: HardDrive, capability: "storage:manage" },
-  { href: "/admin/payments", label: "Payments", icon: CreditCard, capability: "payment:manage" },
-  { href: "/admin/billing", label: "Subscription", icon: Wallet, capability: "billing:manage" },
-  { href: "/admin/audit-log", label: "Audit log", icon: ScrollText, capability: "site:view_audit_log" },
+  { href: "/admin/users", key: "nav.admin.users", label: "Users", icon: Users, capability: "user:view" },
+  { href: "/admin/cohorts", key: "nav.admin.cohorts", label: "Cohorts", icon: UsersRound, capability: "cohort:manage" },
+  { href: "/admin/roles", key: "nav.admin.roles", label: "Roles & permissions", icon: ShieldCheck, capability: "role:manage" },
+  { href: "/admin/categories", key: "nav.admin.categories", label: "Categories", icon: FolderTree, capability: "category:manage" },
+  { href: "/admin/reports", key: "nav.admin.reports", label: "Reports", icon: BarChart3, capability: "report:view_site" },
+  { href: "/admin/certificates", key: "nav.admin.certificates", label: "Certificate templates", icon: Award, capability: "certificate:manage_templates" },
+  { href: "/admin/badges", key: "nav.admin.badges", label: "Site badges", icon: Medal, capability: "badge:manage" },
+  { href: "/admin/organization", key: "nav.admin.organization", label: "Organization", icon: Building2, capability: "site:config" },
+  { href: "/admin/storage", key: "nav.admin.storage", label: "File storage", icon: HardDrive, capability: "storage:manage" },
+  { href: "/admin/payments", key: "nav.admin.payments", label: "Payments", icon: CreditCard, capability: "payment:manage" },
+  { href: "/admin/billing", key: "nav.admin.billing", label: "Subscription", icon: Wallet, capability: "billing:manage" },
+  { href: "/admin/sso", key: "nav.admin.sso", label: "Single sign-on", icon: KeyRound, capability: "site:manage_sso" },
+  { href: "/admin/lti", key: "nav.admin.lti", label: "External tools (LTI)", icon: Plug, capability: "lti:manage_tools" },
+  { href: "/admin/system", key: "nav.admin.system", label: "System status", icon: Activity, capability: "site:view_system" },
+  { href: "/admin/audit-log", key: "nav.admin.auditLog", label: "Audit log", icon: ScrollText, capability: "site:view_audit_log" },
 ];
 
 function NotificationBell() {
+  const t = useT();
   const { data } = useQuery({
     queryKey: ["notifications", "unread-count"],
     queryFn: () => api<{ count: number }>("/notifications/unread-count").catch(() => ({ count: 0 })),
     refetchInterval: 60_000,
   });
+  const count = data?.count ?? 0;
+  const label = count
+    ? t("nav.notificationsUnread", "Notifications ({count} unread)", { count: count > 99 ? "99+" : count })
+    : t("nav.notifications", "Notifications");
   return (
-    <Button variant="ghost" size="icon" render={<Link href="/notifications" aria-label="Notifications" />}>
+    <Link href="/notifications" aria-label={label} title={label} className={buttonVariants({ variant: "ghost", size: "icon" })}>
       <span className="relative">
-        <Bell />
-        {!!data?.count && (
-          <span className="absolute -top-1.5 -right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] text-white">
-            {data.count > 99 ? "99+" : data.count}
+        <Bell aria-hidden />
+        {!!count && (
+          <span aria-hidden className="absolute -top-1.5 -right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] text-white">
+            {count > 99 ? "99+" : count}
           </span>
         )}
       </span>
-    </Button>
+    </Link>
+  );
+}
+
+/** Account-menu language picker: remembers the choice locally and saves it to the profile. */
+function LanguageMenu({ signedIn }: { signedIn: boolean }) {
+  const t = useT();
+  const locale = useLocale();
+  const qc = useQueryClient();
+  const save = useMutation({
+    mutationFn: (next: Locale) => api("/users/me", { method: "PATCH", body: { locale: next } }),
+    onSettled: () => qc.invalidateQueries({ queryKey: meKey }),
+  });
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        <Languages /> {t("nav.language", "Language")}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        <DropdownMenuRadioGroup
+          value={locale}
+          onValueChange={(v) => {
+            const next = v as Locale;
+            setStoredLocale(next);
+            if (signedIn) save.mutate(next);
+          }}
+        >
+          {(Object.keys(LOCALES) as Locale[]).map((l) => (
+            <DropdownMenuRadioItem key={l} value={l} lang={l}>
+              {LOCALES[l]}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   );
 }
 
@@ -108,14 +163,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const logout = useLogout();
+  const t = useT();
 
   useEffect(() => {
     if (session.isSuccess && !session.user) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
-  }, [session.isSuccess, session.user, pathname, router]);
+    else if (session.data?.mfaEnrollmentRequired) router.replace(`/mfa-setup?next=${encodeURIComponent(pathname)}`);
+  }, [session.isSuccess, session.user, session.data?.mfaEnrollmentRequired, pathname, router]);
 
   if (!session.user) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center" aria-busy="true">
+        <span className="sr-only">{t("common.loading", "Loading…")}</span>
         <Skeleton className="h-10 w-40" />
       </div>
     );
@@ -125,14 +183,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isActive = (href: string) => pathname === href.split("?")[0] || (href !== "/dashboard" && pathname.startsWith(href.split("?")[0]!));
   const initials = `${session.user.firstName[0] ?? ""}${session.user.lastName[0] ?? ""}`;
 
+  const renderItem = (item: NavItem) => {
+    const active = isActive(item.href);
+    const label = t(item.key, item.label);
+    return (
+      <SidebarMenuItem key={item.href}>
+        <SidebarMenuButton isActive={active} tooltip={label} render={<Link href={item.href} aria-current={active ? "page" : undefined} />}>
+          <item.icon />
+          <span>{label}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  };
+
   return (
     <SidebarProvider>
-      <Sidebar collapsible="icon">
+      <a
+        href="#main-content"
+        className="sr-only z-50 rounded-md bg-background px-3 py-2 text-sm font-medium shadow focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:ring-2 focus:ring-ring"
+      >
+        {t("nav.skipToContent", "Skip to content")}
+      </a>
+      <Sidebar collapsible="icon" aria-label={t("nav.mainNavigation", "Main navigation")}>
         <SidebarHeader>
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton size="lg" render={<Link href="/dashboard" />}>
-                <GraduationCap className="text-primary" />
+                <GraduationCap className="text-primary" aria-hidden />
                 <span className="truncate font-semibold">{session.organization?.name ?? "LMS"}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
@@ -140,34 +217,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </SidebarHeader>
         <SidebarContent>
           <SidebarGroup>
-            <SidebarGroupLabel>Learning</SidebarGroupLabel>
+            <SidebarGroupLabel>{t("nav.learning", "Learning")}</SidebarGroupLabel>
             <SidebarGroupContent>
-              <SidebarMenu>
-                {LEARN.map((item) => (
-                  <SidebarMenuItem key={item.href}>
-                    <SidebarMenuButton isActive={isActive(item.href)} tooltip={item.label} render={<Link href={item.href} />}>
-                      <item.icon />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
+              <SidebarMenu>{LEARN.map(renderItem)}</SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
           {admin.length > 0 && (
             <SidebarGroup>
-              <SidebarGroupLabel>Administration</SidebarGroupLabel>
+              <SidebarGroupLabel>{t("nav.administration", "Administration")}</SidebarGroupLabel>
               <SidebarGroupContent>
-                <SidebarMenu>
-                  {admin.map((item) => (
-                    <SidebarMenuItem key={item.href}>
-                      <SidebarMenuButton isActive={isActive(item.href)} tooltip={item.label} render={<Link href={item.href} />}>
-                        <item.icon />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  ))}
-                </SidebarMenu>
+                <SidebarMenu>{admin.map(renderItem)}</SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
           )}
@@ -175,7 +234,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <SidebarFooter>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton render={<Link href="/profile" />} tooltip="Profile">
+              <SidebarMenuButton
+                isActive={pathname === "/profile"}
+                render={<Link href="/profile" aria-current={pathname === "/profile" ? "page" : undefined} />}
+                tooltip={t("nav.profile", "Profile")}
+              >
                 <User />
                 <span className="truncate">
                   {session.user.firstName} {session.user.lastName}
@@ -187,11 +250,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </Sidebar>
       <SidebarInset>
         <header className="sticky top-0 z-10 flex h-14 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur">
-          <SidebarTrigger />
+          <SidebarTrigger aria-label={t("nav.toggleSidebar", "Toggle sidebar")} />
           <div className="flex-1" />
+          <Link href="/search" aria-label={t("common.search", "Search")} title={t("common.search", "Search")} className={buttonVariants({ variant: "ghost", size: "icon" })}>
+            <Search aria-hidden />
+          </Link>
           <NotificationBell />
           <DropdownMenu>
-            <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label="Account menu" />}>
+            <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label={t("nav.accountMenu", "Account menu")} />}>
               <Avatar className="size-7">
                 <AvatarFallback>{initials}</AvatarFallback>
               </Avatar>
@@ -202,15 +268,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => router.push("/profile")}>
-                <User /> Profile & security
+                <User /> {t("nav.profileSecurity", "Profile & security")}
               </DropdownMenuItem>
+              <LanguageMenu signedIn={!!session.user} />
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => void logout()}>
-                <LogOut /> Sign out
+                <LogOut /> {t("nav.signOut", "Sign out")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </header>
-        <main className="mx-auto w-full max-w-6xl flex-1 p-4 md:p-6">{children}</main>
+        <main id="main-content" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 p-4 outline-none md:p-6">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );

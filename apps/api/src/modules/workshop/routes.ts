@@ -41,7 +41,7 @@ const zSubmission = z.object({
   updatedAt: zNullableDate,
 });
 
-const zReceived = z.object({ id: zId, grade: z.number().nullable(), feedback: z.string().nullable(), scores: z.record(z.number()).nullable() });
+const zReceived = z.object({ id: zId, grade: z.number().nullable(), feedback: z.string().nullable(), scores: z.record(z.string(), z.number()).nullable() });
 
 const zOverview = z.object({
   phase: z.enum(PHASES),
@@ -569,7 +569,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
             submission: zSubmission.omit({ grade: true, gradeOverride: true }),
             isOwnSubmission: z.boolean(),
             criteria: z.array(zCriterion),
-            scores: z.record(z.number()).nullable(),
+            scores: z.record(z.string(), z.number()).nullable(),
             feedback: z.string().nullable(),
             grade: z.number().nullable(),
             submittedAt: zNullableDate,
@@ -608,7 +608,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags,
         summary: "Submit (or revise) my assessment: a score per criterion and feedback",
         params: params.extend({ assessmentId: zId }),
-        body: z.object({ scores: z.record(z.number().min(0)), feedback: z.string().max(50_000).nullable().optional() }),
+        body: z.object({ scores: z.record(z.string(), z.number().min(0)), feedback: z.string().max(50_000).nullable().optional() }),
         response: { 200: z.object({ grade: z.number() }) },
       },
     },

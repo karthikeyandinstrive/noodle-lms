@@ -4,16 +4,17 @@ import { ChevronLeft, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { EmptyState, PageHeader, QueryState, formatDate } from "@/components/common";
+import { EmptyState, PageHeader, QueryState, fullName } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useActivity } from "@/features/activities/use-activity";
 import { api, errorMessage } from "@/lib/api";
+import { useFormat, useT } from "@/lib/i18n";
 import { useQueryClient } from "@tanstack/react-query";
 import { selectClass } from "../assignment/form-utils";
-import { TYPE_LABEL, quizKeys, round, useResults } from "./api";
+import { quizKeys, round, typeLabel, useResults } from "./api";
 
 type Filter = "all" | "needs" | "finished" | "in_progress";
 
@@ -23,6 +24,8 @@ export function QuizResultsPage() {
   const results = useResults(activityId);
   const qc = useQueryClient();
   const [filter, setFilter] = useState<Filter>("all");
+  const t = useT();
+  const fmt = useFormat();
   const canGrade = !!activity.data?.capabilities["quiz:grade"];
 
   const attempts = useMemo(() => {
@@ -42,14 +45,19 @@ export function QuizResultsPage() {
         <div className="space-y-6">
           <div>
             <Link href={`/activities/${activityId}`} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-              <ChevronLeft className="size-4" /> {activity.data.name}
+              <ChevronLeft aria-hidden className="size-4" /> {activity.data.name}
             </Link>
             <PageHeader
               className="mt-2 mb-0"
-              title="Quiz results"
+              title={t("quiz.results.title", "Quiz results")}
               description={
                 results.data
-                  ? `${results.data.attempts.length} attempts · average ${round(average)} / ${results.data.gradeMax} · ${results.data.attempts.filter((a) => a.needsGrading).length} awaiting grading`
+                  ? t("quiz.results.summary", "{attempts} attempts · average {average} / {max} · {awaiting} awaiting grading", {
+                      attempts: results.data.attempts.length,
+                      average: round(average),
+                      max: results.data.gradeMax,
+                      awaiting: results.data.attempts.filter((a) => a.needsGrading).length,
+                    })
                   : undefined
               }
             />
@@ -59,32 +67,42 @@ export function QuizResultsPage() {
               <>
                 <Card>
                   <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
-                    <CardTitle className="text-base">Attempts</CardTitle>
+                    <CardTitle className="text-base">
+                      <h2 id="res-attempts">{t("quiz.results.attempts", "Attempts")}</h2>
+                    </CardTitle>
                     <label className="sr-only" htmlFor="res-filter">
-                      Filter attempts
+                      {t("quiz.results.filter", "Filter attempts")}
                     </label>
                     <select id="res-filter" className={`${selectClass} w-auto`} value={filter} onChange={(e) => setFilter(e.target.value as Filter)}>
-                      <option value="all">All attempts</option>
-                      <option value="needs">Needs grading</option>
-                      <option value="finished">Finished</option>
-                      <option value="in_progress">In progress</option>
+                      <option value="all">{t("quiz.results.allAttempts", "All attempts")}</option>
+                      <option value="needs">{t("quiz.needsGrading", "Needs grading")}</option>
+                      <option value="finished">{t("quiz.finished", "Finished")}</option>
+                      <option value="in_progress">{t("quiz.inProgress", "In progress")}</option>
                     </select>
                   </CardHeader>
                   <CardContent className="overflow-x-auto">
                     {attempts.length === 0 ? (
-                      <EmptyState title="No attempts" />
+                      (
+                      <div role="status">
+                        <EmptyState title={t("quiz.results.noAttempts", "No attempts")} />
+                      </div>
+                    )
                     ) : (
-                      <Table>
+                      <Table aria-labelledby="res-attempts">
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Student</TableHead>
-                            <TableHead>#</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead className="hidden md:table-cell">Finished</TableHead>
-                            <TableHead>Marks / {round(results.data.totalMarks)}</TableHead>
-                            <TableHead>Grade / {results.data.gradeMax}</TableHead>
+                            <TableHead>{t("quiz.student", "Student")}</TableHead>
                             <TableHead>
-                              <span className="sr-only">Actions</span>
+                              <abbr title={t("quiz.attempt", "Attempt")} className="no-underline">
+                                #
+                              </abbr>
+                            </TableHead>
+                            <TableHead>{t("common.status", "Status")}</TableHead>
+                            <TableHead className="hidden md:table-cell">{t("quiz.finished", "Finished")}</TableHead>
+                            <TableHead>{t("quiz.marksOutOf", "Marks / {max}", { max: round(results.data.totalMarks) })}</TableHead>
+                            <TableHead>{t("quiz.gradeOutOf", "Grade / {max}", { max: results.data.gradeMax })}</TableHead>
+                            <TableHead>
+                              <span className="sr-only">{t("common.actions", "Actions")}</span>
                             </TableHead>
                           </TableRow>
                         </TableHeader>
@@ -93,44 +111,51 @@ export function QuizResultsPage() {
                             <TableRow key={a.id}>
                               <TableCell>
                                 <div className="font-medium">
-                                  {a.user.firstName} {a.user.lastName}
+                                  {fullName(a.user)}
                                 </div>
                                 <div className="hidden text-xs text-muted-foreground sm:block">{a.user.email}</div>
                               </TableCell>
                               <TableCell>{a.attempt}</TableCell>
                               <TableCell>
                                 {a.status === "in_progress" ? (
-                                  <Badge variant="outline">In progress</Badge>
+                                  <Badge variant="outline">{t("quiz.inProgress", "In progress")}</Badge>
                                 ) : a.needsGrading ? (
-                                  <Badge variant="secondary">Needs grading</Badge>
+                                  <Badge variant="secondary">{t("quiz.needsGrading", "Needs grading")}</Badge>
                                 ) : (
-                                  <Badge>Finished</Badge>
+                                  <Badge>{t("quiz.finished", "Finished")}</Badge>
                                 )}
                               </TableCell>
-                              <TableCell className="hidden md:table-cell">{formatDate(a.finishedAt)}</TableCell>
+                              <TableCell className="hidden md:table-cell">{fmt.date(a.finishedAt)}</TableCell>
                               <TableCell>{round(a.sumMarks)}</TableCell>
                               <TableCell>{a.needsGrading ? "—" : round(a.grade)}</TableCell>
                               <TableCell className="whitespace-nowrap text-right">
-                                <Button variant="ghost" size="sm" render={<Link href={`/activities/${activityId}/quiz/attempt/${a.id}`} />}>
-                                  {a.needsGrading && canGrade ? "Grade" : "Review"}
-                                </Button>
+                                <Link
+                                  href={`/activities/${activityId}/quiz/attempt/${a.id}`}
+                                  className={buttonVariants({ variant: "ghost", size: "sm" })}
+                                >
+                                  {a.needsGrading && canGrade ? t("quiz.grade", "Grade") : t("quiz.review", "Review")}
+                                  <span className="sr-only">
+                                    {" "}
+                                    {t("quiz.attemptOf", "attempt {number} of {name}", { number: a.attempt, name: fullName(a.user) })}
+                                  </span>
+                                </Link>
                                 {canGrade && (
                                   <Button
                                     variant="ghost"
                                     size="icon-sm"
-                                    aria-label={`Delete attempt ${a.attempt} of ${a.user.firstName} ${a.user.lastName}`}
+                                    aria-label={t("quiz.deleteAttemptOf", "Delete attempt {number} of {name}", { number: a.attempt, name: fullName(a.user) })}
                                     onClick={async () => {
-                                      if (!window.confirm("Delete this attempt? The student's grade will be recalculated.")) return;
+                                      if (!window.confirm(t("quiz.deleteAttemptConfirm", "Delete this attempt? The student's grade will be recalculated."))) return;
                                       try {
                                         await api(`/quizzes/${activityId}/attempts/${a.id}`, { method: "DELETE" });
-                                        toast.success("Attempt deleted");
+                                        toast.success(t("quiz.attemptDeleted", "Attempt deleted"));
                                         await qc.invalidateQueries({ queryKey: quizKeys.results(activityId) });
                                       } catch (err) {
                                         toast.error(errorMessage(err));
                                       }
                                     }}
                                   >
-                                    <Trash2 />
+                                    <Trash2 aria-hidden />
                                   </Button>
                                 )}
                               </TableCell>
@@ -144,18 +169,24 @@ export function QuizResultsPage() {
 
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">Question statistics</CardTitle>
+                    <CardTitle className="text-base">
+                      <h2 id="res-stats">{t("quiz.results.stats", "Question statistics")}</h2>
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="overflow-x-auto">
-                    <Table>
+                    <Table aria-labelledby="res-stats" aria-describedby="res-facility">
                       <TableHeader>
                         <TableRow>
-                          <TableHead>#</TableHead>
-                          <TableHead>Question</TableHead>
-                          <TableHead className="hidden sm:table-cell">Type</TableHead>
-                          <TableHead>Responses</TableHead>
-                          <TableHead>Avg mark</TableHead>
-                          <TableHead>Facility</TableHead>
+                          <TableHead>
+                            <abbr title={t("quiz.number", "Number")} className="no-underline">
+                              #
+                            </abbr>
+                          </TableHead>
+                          <TableHead>{t("quiz.question", "Question")}</TableHead>
+                          <TableHead className="hidden sm:table-cell">{t("quiz.type", "Type")}</TableHead>
+                          <TableHead>{t("quiz.responses", "Responses")}</TableHead>
+                          <TableHead>{t("quiz.avgMark", "Avg mark")}</TableHead>
+                          <TableHead>{t("quiz.facility", "Facility")}</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -163,10 +194,14 @@ export function QuizResultsPage() {
                           <TableRow key={q.slotId}>
                             <TableCell>{q.number}</TableCell>
                             <TableCell className="max-w-56 truncate">{q.name}</TableCell>
-                            <TableCell className="hidden sm:table-cell">{TYPE_LABEL[q.type]}</TableCell>
+                            <TableCell className="hidden sm:table-cell">{typeLabel(t, q.type)}</TableCell>
                             <TableCell>
                               {q.responses}
-                              {q.needsGrading > 0 && <span className="ml-1 text-xs text-muted-foreground">({q.needsGrading} to grade)</span>}
+                              {q.needsGrading > 0 && (
+                                <span className="ml-1 text-xs text-muted-foreground">
+                                  {t("quiz.toGrade", "({count} to grade)", { count: q.needsGrading })}
+                                </span>
+                              )}
                             </TableCell>
                             <TableCell>
                               {round(q.averageMark)} / {round(q.maxMark)}
@@ -187,8 +222,8 @@ export function QuizResultsPage() {
                         ))}
                       </TableBody>
                     </Table>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      Facility index: the average score on a question across finished attempts (higher = easier).
+                    <p id="res-facility" className="mt-2 text-xs text-muted-foreground">
+                      {t("quiz.facilityHint", "Facility index: the average score on a question across finished attempts (higher = easier).")}
                     </p>
                   </CardContent>
                 </Card>

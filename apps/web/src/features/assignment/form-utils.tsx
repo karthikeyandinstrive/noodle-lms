@@ -99,21 +99,19 @@ export function formatBytes(n: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** Human "in 3 days" / "2 hours ago" relative to now. */
-export function relativeTime(iso: string | null, now = Date.now()) {
+/** Localized "in 3 days" / "2 hours ago" relative to now. */
+export function relativeTime(iso: string | null, locale?: string, now = Date.now()) {
   if (!iso) return "";
   const diff = new Date(iso).getTime() - now;
   const abs = Math.abs(diff);
-  const units: [number, string][] = [
+  const rtf = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  const units: [number, Intl.RelativeTimeFormatUnit][] = [
     [86_400_000, "day"],
     [3_600_000, "hour"],
     [60_000, "minute"],
   ];
-  for (const [ms, name] of units) {
-    if (abs >= ms) {
-      const n = Math.round(abs / ms);
-      return diff > 0 ? `in ${n} ${name}${n > 1 ? "s" : ""}` : `${n} ${name}${n > 1 ? "s" : ""} ago`;
-    }
+  for (const [ms, unit] of units) {
+    if (abs >= ms) return rtf.format(Math.sign(diff) * Math.round(abs / ms), unit);
   }
-  return diff > 0 ? "in less than a minute" : "just now";
+  return rtf.format(0, "minute");
 }

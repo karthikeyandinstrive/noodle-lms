@@ -12,12 +12,18 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { QueryState } from "@/components/common";
 import { api, errorMessage } from "@/lib/api";
+import { useLocale, useT, type Translate } from "@/lib/i18n";
 import { NativeSelect } from "./native-select";
-import { AGGREGATION_LABELS, fmtGrade, gradesKey, type Aggregation, type GradeCategory, type GradeItem } from "./types";
+import { AGGREGATION_LABELS, aggregationLabel, fmtGrade, gradesKey, type Aggregation, type GradeCategory, type GradeItem } from "./types";
 
 type Setup = { categories: GradeCategory[]; items: GradeItem[] };
 
-const TYPE_LABELS: Record<GradeItem["type"], string> = { activity: "Activity", manual: "Manual", category: "Category total", course: "Course total" };
+const TYPE_LABELS: Record<GradeItem["type"], { key: string; label: string }> = {
+  activity: { key: "grades.itemType.activity", label: "Activity" },
+  manual: { key: "grades.itemType.manual", label: "Manual" },
+  category: { key: "grades.categoryTotal", label: "Category total" },
+  course: { key: "grades.courseTotal", label: "Course total" },
+};
 
 function useSetup(courseId: string) {
   return useQuery({ queryKey: [...gradesKey(courseId), "setup"], queryFn: () => api<Setup>(`/grades/courses/${courseId}/setup`) });
@@ -33,10 +39,10 @@ function useRun(courseId: string) {
 }
 
 /** Category path label, e.g. "Course › Homework › Labs". */
-function categoryLabels(categories: GradeCategory[]) {
+function categoryLabels(categories: GradeCategory[], t: Translate) {
   const byId = new Map(categories.map((c) => [c.id, c]));
   const label = (c: GradeCategory, depth = 0): string => {
-    if (!c.parentId || depth > 10) return c.parentId ? c.name : "Course (top level)";
+    if (!c.parentId || depth > 10) return c.parentId ? c.name : t("grades.topLevel", "Course (top level)");
     const parent = byId.get(c.parentId);
     return parent && parent.parentId ? `${label(parent, depth + 1)} › ${c.name}` : c.name;
   };
@@ -44,6 +50,7 @@ function categoryLabels(categories: GradeCategory[]) {
 }
 
 function CategoryRow({ category, categories, courseId }: { category: GradeCategory; categories: GradeCategory[]; courseId: string }) {
+  const t = useT();
   const run = useRun(courseId);
   const isRoot = !category.parentId;
   const [form, setForm] = useState({
@@ -53,7 +60,7 @@ function CategoryRow({ category, categories, courseId }: { category: GradeCatego
     weight: String(category.weight ?? 1),
     parentId: category.parentId ?? "",
   });
-  const labels = categoryLabels(categories);
+  const labels = categoryLabels(categories, t);
   const idp = `cat-${category.id}`;
   return (
     <form
@@ -65,15 +72,15 @@ function CategoryRow({ category, categories, courseId }: { category: GradeCatego
           body.weight = Number(form.weight);
           if (form.parentId && form.parentId !== category.parentId) body.parentId = form.parentId;
         }
-        run.mutate(() => api(`/grades/categories/${category.id}`, { method: "PATCH", body }), { onSuccess: () => toast.success("Category saved") });
+        run.mutate(() => api(`/grades/categories/${category.id}`, { method: "PATCH", body }), { onSuccess: () => toast.success(t("grades.categorySaved", "Category saved")) });
       }}
     >
       <div className="space-y-1.5">
-        <Label htmlFor={`${idp}-name`}>{isRoot ? "Course category" : "Name"}</Label>
+        <Label htmlFor={`${idp}-name`}>{isRoot ? t("grades.courseCategory", "Course category") : t("common.name", "Name")}</Label>
         <Input id={`${idp}-name`} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required maxLength={255} />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor={`${idp}-parent`}>Parent</Label>
+        <Label htmlFor={`${idp}-parent`}>{t("grades.parent", "Parent")}</Label>
         {isRoot ? (
           <p className="h-8 text-sm leading-8 text-muted-foreground">—</p>
         ) : (
@@ -89,21 +96,21 @@ function CategoryRow({ category, categories, courseId }: { category: GradeCatego
         )}
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor={`${idp}-agg`}>Aggregation</Label>
+        <Label htmlFor={`${idp}-agg`}>{t("grades.aggregation", "Aggregation")}</Label>
         <NativeSelect id={`${idp}-agg`} className="w-full" value={form.aggregation} onChange={(e) => setForm({ ...form, aggregation: e.target.value as Aggregation })}>
-          {Object.entries(AGGREGATION_LABELS).map(([v, l]) => (
+          {(Object.keys(AGGREGATION_LABELS) as Aggregation[]).map((v) => (
             <option key={v} value={v}>
-              {l}
+              {aggregationLabel(t, v)}
             </option>
           ))}
         </NativeSelect>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor={`${idp}-drop`}>Drop lowest</Label>
+        <Label htmlFor={`${idp}-drop`}>{t("grades.dropLowest", "Drop lowest")}</Label>
         <Input id={`${idp}-drop`} type="number" min={0} max={100} value={form.dropLowest} onChange={(e) => setForm({ ...form, dropLowest: e.target.value })} />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor={`${idp}-weight`}>Weight</Label>
+        <Label htmlFor={`${idp}-weight`}>{t("grades.weight", "Weight")}</Label>
         <Input
           id={`${idp}-weight`}
           type="number"
@@ -116,21 +123,21 @@ function CategoryRow({ category, categories, courseId }: { category: GradeCatego
       </div>
       <div className="flex gap-1">
         <Button type="submit" size="sm" disabled={run.isPending}>
-          Save
+          {t("common.save", "Save")}
         </Button>
         {!isRoot && (
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label={`Delete category ${category.name}`}
+            aria-label={t("grades.deleteCategory", "Delete category {name}", { name: category.name })}
             onClick={() => {
-              if (confirm(`Delete "${category.name}"? Its items move to the parent category.`)) {
-                run.mutate(() => api(`/grades/categories/${category.id}`, { method: "DELETE" }), { onSuccess: () => toast.success("Category deleted") });
+              if (confirm(t("grades.confirmDeleteCategory", "Delete \"{name}\"? Its items move to the parent category.", { name: category.name }))) {
+                run.mutate(() => api(`/grades/categories/${category.id}`, { method: "DELETE" }), { onSuccess: () => toast.success(t("grades.categoryDeleted", "Category deleted")) });
               }
             }}
           >
-            <Trash2 />
+            <Trash2 aria-hidden />
           </Button>
         )}
       </div>
@@ -139,9 +146,10 @@ function CategoryRow({ category, categories, courseId }: { category: GradeCatego
 }
 
 function NewCategoryForm({ categories, courseId }: { categories: GradeCategory[]; courseId: string }) {
+  const t = useT();
   const run = useRun(courseId);
   const root = categories.find((c) => !c.parentId);
-  const labels = categoryLabels(categories);
+  const labels = categoryLabels(categories, t);
   const empty = { name: "", parentId: root?.id ?? "", aggregation: "weighted_mean" as Aggregation, weight: "1" };
   const [form, setForm] = useState(empty);
   return (
@@ -153,7 +161,7 @@ function NewCategoryForm({ categories, courseId }: { categories: GradeCategory[]
           () => api(`/grades/courses/${courseId}/categories`, { body: { name: form.name, parentId: form.parentId || null, aggregation: form.aggregation, weight: Number(form.weight) } }),
           {
             onSuccess: () => {
-              toast.success("Category added");
+              toast.success(t("grades.categoryAdded", "Category added"));
               setForm(empty);
             },
           },
@@ -161,11 +169,11 @@ function NewCategoryForm({ categories, courseId }: { categories: GradeCategory[]
       }}
     >
       <div className="space-y-1.5">
-        <Label htmlFor="newcat-name">New category</Label>
-        <Input id="newcat-name" placeholder="e.g. Homework" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required maxLength={255} />
+        <Label htmlFor="newcat-name">{t("grades.newCategory", "New category")}</Label>
+        <Input id="newcat-name" placeholder={t("grades.newCategoryPlaceholder", "e.g. Homework")} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required maxLength={255} />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="newcat-parent">Parent</Label>
+        <Label htmlFor="newcat-parent">{t("grades.parent", "Parent")}</Label>
         <NativeSelect id="newcat-parent" className="w-full" value={form.parentId} onChange={(e) => setForm({ ...form, parentId: e.target.value })}>
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
@@ -175,30 +183,31 @@ function NewCategoryForm({ categories, courseId }: { categories: GradeCategory[]
         </NativeSelect>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="newcat-agg">Aggregation</Label>
+        <Label htmlFor="newcat-agg">{t("grades.aggregation", "Aggregation")}</Label>
         <NativeSelect id="newcat-agg" className="w-full" value={form.aggregation} onChange={(e) => setForm({ ...form, aggregation: e.target.value as Aggregation })}>
-          {Object.entries(AGGREGATION_LABELS).map(([v, l]) => (
+          {(Object.keys(AGGREGATION_LABELS) as Aggregation[]).map((v) => (
             <option key={v} value={v}>
-              {l}
+              {aggregationLabel(t, v)}
             </option>
           ))}
         </NativeSelect>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="newcat-weight">Weight</Label>
+        <Label htmlFor="newcat-weight">{t("grades.weight", "Weight")}</Label>
         <Input id="newcat-weight" type="number" min={0} step="any" value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })} />
       </div>
       <Button type="submit" disabled={run.isPending}>
-        <Plus /> Add
+        <Plus aria-hidden /> {t("common.add", "Add")}
       </Button>
     </form>
   );
 }
 
 function NewItemForm({ categories, courseId }: { categories: GradeCategory[]; courseId: string }) {
+  const t = useT();
   const run = useRun(courseId);
   const root = categories.find((c) => !c.parentId);
-  const labels = categoryLabels(categories);
+  const labels = categoryLabels(categories, t);
   const empty = { name: "", categoryId: root?.id ?? "", gradeMax: "100", gradePass: "", weight: "1" };
   const [form, setForm] = useState(empty);
   return (
@@ -219,7 +228,7 @@ function NewItemForm({ categories, courseId }: { categories: GradeCategory[]; co
             }),
           {
             onSuccess: () => {
-              toast.success("Grade item added");
+              toast.success(t("grades.itemAdded", "Grade item added"));
               setForm(empty);
             },
           },
@@ -227,11 +236,11 @@ function NewItemForm({ categories, courseId }: { categories: GradeCategory[]; co
       }}
     >
       <div className="space-y-1.5">
-        <Label htmlFor="newitem-name">New manual item</Label>
-        <Input id="newitem-name" placeholder="e.g. Participation" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required maxLength={255} />
+        <Label htmlFor="newitem-name">{t("grades.newManualItem", "New manual item")}</Label>
+        <Input id="newitem-name" placeholder={t("grades.newItemPlaceholder", "e.g. Participation")} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required maxLength={255} />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="newitem-cat">Category</Label>
+        <Label htmlFor="newitem-cat">{t("grades.category", "Category")}</Label>
         <NativeSelect id="newitem-cat" className="w-full" value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })}>
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
@@ -241,32 +250,33 @@ function NewItemForm({ categories, courseId }: { categories: GradeCategory[]; co
         </NativeSelect>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="newitem-max">Max grade</Label>
+        <Label htmlFor="newitem-max">{t("grades.maxGradeLabel", "Max grade")}</Label>
         <Input id="newitem-max" type="number" min={0.01} step="any" value={form.gradeMax} onChange={(e) => setForm({ ...form, gradeMax: e.target.value })} required />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="newitem-pass">Pass grade</Label>
+        <Label htmlFor="newitem-pass">{t("grades.passGrade", "Pass grade")}</Label>
         <Input id="newitem-pass" type="number" min={0} step="any" value={form.gradePass} onChange={(e) => setForm({ ...form, gradePass: e.target.value })} />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="newitem-weight">Weight</Label>
+        <Label htmlFor="newitem-weight">{t("grades.weight", "Weight")}</Label>
         <Input id="newitem-weight" type="number" min={0} step="any" value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })} />
       </div>
       <Button type="submit" disabled={run.isPending}>
-        <Plus /> Add
+        <Plus aria-hidden /> {t("common.add", "Add")}
       </Button>
     </form>
   );
 }
 
 function WeightInput({ item, courseId }: { item: GradeItem; courseId: string }) {
+  const t = useT();
   const run = useRun(courseId);
   const [value, setValue] = useState(String(item.weight));
   const save = () => {
     const n = Number(value);
     if (!Number.isFinite(n) || n < 0) {
       setValue(String(item.weight));
-      return toast.error("Weight must be a positive number");
+      return toast.error(t("grades.weightError", "Weight must be a positive number"));
     }
     if (n !== item.weight) run.mutate(() => api(`/grades/items/${item.id}`, { method: "PATCH", body: { weight: n } }));
   };
@@ -276,7 +286,7 @@ function WeightInput({ item, courseId }: { item: GradeItem; courseId: string }) 
       min={0}
       step="any"
       className="h-7 w-20"
-      aria-label={`Weight of ${item.name}`}
+      aria-label={t("grades.weightOf", "Weight of {name}", { name: item.name })}
       value={value}
       onChange={(e) => setValue(e.target.value)}
       onBlur={save}
@@ -286,8 +296,10 @@ function WeightInput({ item, courseId }: { item: GradeItem; courseId: string }) 
 }
 
 function ItemsTable({ setup, courseId }: { setup: Setup; courseId: string }) {
+  const t = useT();
+  const locale = useLocale();
   const run = useRun(courseId);
-  const labels = categoryLabels(setup.categories);
+  const labels = categoryLabels(setup.categories, t);
   const leaves = setup.items.filter((i) => i.type === "activity" || i.type === "manual");
   const totals = setup.items.filter((i) => i.type === "category" || i.type === "course");
   const patch = (item: GradeItem, body: Record<string, unknown>) => run.mutate(() => api(`/grades/items/${item.id}`, { method: "PATCH", body }));
@@ -303,12 +315,12 @@ function ItemsTable({ setup, courseId }: { setup: Setup; courseId: string }) {
       <th scope="row" className="px-3 py-2 text-left font-normal">
         <div className="font-medium">{item.name}</div>
         <Badge variant="secondary" className="mt-0.5">
-          {TYPE_LABELS[item.type]}
+          {t(TYPE_LABELS[item.type].key, TYPE_LABELS[item.type].label)}
         </Badge>
       </th>
       <td className="px-3 py-2">
         {index !== null ? (
-          <NativeSelect aria-label={`Category of ${item.name}`} value={item.categoryId ?? ""} onChange={(e) => patch(item, { categoryId: e.target.value })}>
+          <NativeSelect aria-label={t("grades.categoryOf", "Category of {name}", { name: item.name })} value={item.categoryId ?? ""} onChange={(e) => patch(item, { categoryId: e.target.value })}>
             {setup.categories.map((c) => (
               <option key={c.id} value={c.id}>
                 {labels.get(c.id)}
@@ -319,23 +331,23 @@ function ItemsTable({ setup, courseId }: { setup: Setup; courseId: string }) {
           <span className="text-muted-foreground">—</span>
         )}
       </td>
-      <td className="px-3 py-2 text-right tabular-nums">{fmtGrade(item.gradeMax)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmtGrade(item.gradeMax, locale)}</td>
       <td className="px-3 py-2">{item.type === "course" ? <span className="text-muted-foreground">—</span> : <WeightInput key={item.weight} item={item} courseId={courseId} />}</td>
       <td className="px-3 py-2">
-        <Switch aria-label={`Hide ${item.name} from learners`} checked={item.hidden} onCheckedChange={(hidden) => patch(item, { hidden })} />
+        <Switch aria-label={t("grades.hideItem", "Hide {name} from learners", { name: item.name })} checked={item.hidden} onCheckedChange={(hidden) => patch(item, { hidden })} />
       </td>
       <td className="px-3 py-2">
-        <Switch aria-label={`Lock ${item.name}`} checked={item.locked} onCheckedChange={(locked) => patch(item, { locked })} />
+        <Switch aria-label={t("grades.lockItem", "Lock {name}", { name: item.name })} checked={item.locked} onCheckedChange={(locked) => patch(item, { locked })} />
       </td>
       <td className="px-3 py-2">
         <div className="flex justify-end gap-1">
           {index !== null && (
             <>
-              <Button variant="ghost" size="icon-sm" aria-label={`Move ${item.name} up`} disabled={index === 0} onClick={() => move(index, index - 1)}>
-                <ArrowUp />
+              <Button variant="ghost" size="icon-sm" aria-label={t("grades.moveUp", "Move {name} up", { name: item.name })} disabled={index === 0} onClick={() => move(index, index - 1)}>
+                <ArrowUp aria-hidden />
               </Button>
-              <Button variant="ghost" size="icon-sm" aria-label={`Move ${item.name} down`} disabled={index === leaves.length - 1} onClick={() => move(index, index + 1)}>
-                <ArrowDown />
+              <Button variant="ghost" size="icon-sm" aria-label={t("grades.moveDown", "Move {name} down", { name: item.name })} disabled={index === leaves.length - 1} onClick={() => move(index, index + 1)}>
+                <ArrowDown aria-hidden />
               </Button>
             </>
           )}
@@ -343,12 +355,12 @@ function ItemsTable({ setup, courseId }: { setup: Setup; courseId: string }) {
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label={`Delete ${item.name}`}
+              aria-label={t("grades.deleteItem", "Delete {name}", { name: item.name })}
               onClick={() => {
-                if (confirm(`Delete "${item.name}" and all its grades?`)) run.mutate(() => api(`/grades/items/${item.id}`, { method: "DELETE" }));
+                if (confirm(t("grades.confirmDeleteItem", "Delete \"{name}\" and all its grades?", { name: item.name }))) run.mutate(() => api(`/grades/items/${item.id}`, { method: "DELETE" }));
               }}
             >
-              <Trash2 />
+              <Trash2 aria-hidden />
             </Button>
           )}
         </div>
@@ -359,16 +371,16 @@ function ItemsTable({ setup, courseId }: { setup: Setup; courseId: string }) {
   return (
     <div className="overflow-x-auto rounded-lg border">
       <table className="w-full min-w-[720px] text-sm">
-        <caption className="sr-only">Grade items</caption>
+        <caption className="sr-only">{t("grades.gradeItems", "Grade items")}</caption>
         <thead className="bg-muted/50 text-left">
           <tr>
-            <th scope="col" className="px-3 py-2 font-medium">Item</th>
-            <th scope="col" className="px-3 py-2 font-medium">Category</th>
-            <th scope="col" className="px-3 py-2 text-right font-medium">Max</th>
-            <th scope="col" className="px-3 py-2 font-medium">Weight</th>
-            <th scope="col" className="px-3 py-2 font-medium">Hidden</th>
-            <th scope="col" className="px-3 py-2 font-medium">Locked</th>
-            <th scope="col" className="px-3 py-2 text-right font-medium"><span className="sr-only">Actions</span></th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("grades.item", "Item")}</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("grades.category", "Category")}</th>
+            <th scope="col" className="px-3 py-2 text-right font-medium">{t("grades.max", "Max")}</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("grades.weight", "Weight")}</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("common.hidden", "Hidden")}</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("grades.locked", "Locked")}</th>
+            <th scope="col" className="px-3 py-2 text-right font-medium"><span className="sr-only">{t("common.actions", "Actions")}</span></th>
           </tr>
         </thead>
         <tbody>
@@ -381,6 +393,7 @@ function ItemsTable({ setup, courseId }: { setup: Setup; courseId: string }) {
 }
 
 export function GradeSetup({ courseId }: { courseId: string }) {
+  const t = useT();
   const setup = useSetup(courseId);
   return (
     <QueryState query={setup}>
@@ -388,9 +401,12 @@ export function GradeSetup({ courseId }: { courseId: string }) {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Categories</CardTitle>
+              <CardTitle>{t("grades.categories", "Categories")}</CardTitle>
               <CardDescription>
-                Each category aggregates its items as a percentage; a category&apos;s weight applies inside its parent. The course category produces the course total.
+                {t(
+                  "grades.categoriesHint",
+                  "Each category aggregates its items as a percentage; a category's weight applies inside its parent. The course category produces the course total.",
+                )}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -404,8 +420,8 @@ export function GradeSetup({ courseId }: { courseId: string }) {
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>Grade items</CardTitle>
-              <CardDescription>Activity items are created by gradable activities. Hidden items are not shown to learners; locked items cannot be changed.</CardDescription>
+              <CardTitle>{t("grades.gradeItems", "Grade items")}</CardTitle>
+              <CardDescription>{t("grades.gradeItemsHint", "Activity items are created by gradable activities. Hidden items are not shown to learners; locked items cannot be changed.")}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <ItemsTable setup={setup.data} courseId={courseId} />

@@ -116,7 +116,7 @@ const zSummary = z.object({
   isPreview: z.boolean(),
   /** Quiz grade computed with the grade method (null when hidden or not graded). */
   myGrade: z.number().nullable(),
-  capabilities: z.record(z.boolean()),
+  capabilities: z.record(z.string(), z.boolean()),
 });
 
 const zSlot = z.object({

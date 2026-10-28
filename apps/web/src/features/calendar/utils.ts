@@ -34,6 +34,6 @@ export function weekdayNames(locale?: string) {
   }));
 }
 
-export function formatTime(d: Date) {
-  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+export function formatTime(d: Date, locale?: string) {
+  return d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
 }

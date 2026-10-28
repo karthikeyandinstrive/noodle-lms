@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Download, FolderPlus, History, MoreHorizontal, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { Download, FileText, FolderPlus, History, MoreHorizontal, Pencil, Plus, Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { EmptyState, ErrorAlert, HtmlContent, QueryState, formatDate } from "@/components/common";
@@ -14,10 +14,12 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useCourse } from "@/features/courses/use-course";
 import { api, errorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { selectClass } from "../assignment/form-utils";
 import { TYPE_LABEL, type QuestionType } from "../quiz/api";
 import { bankKeys, useBankPermissions, useCategories, useQuestions, useVersions, type Category } from "./api";
+import { GiftImportDialog, downloadGift } from "./gift";
 import { QuestionEditorDialog } from "./question-editor";
 
 export function QuestionBankPage() {
@@ -223,6 +225,8 @@ function CategoryQuestions({ courseId, category, onDeleted }: { courseId: string
   const [renaming, setRenaming] = useState(false);
   const [subCat, setSubCat] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [giftImport, setGiftImport] = useState(false);
+  const t = useT();
   const qs = useQuestions(category.id, courseId, { page, search: search || undefined, type: type || undefined });
   const refresh = () => qc.invalidateQueries({ queryKey: bankKeys.all });
 
@@ -299,10 +303,16 @@ function CategoryQuestions({ courseId, category, onDeleted }: { courseId: string
               <DropdownMenuItem onClick={() => void exportJson()}>
                 <Download /> Export JSON
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void downloadGift(category, courseId).catch((err) => toast.error(errorMessage(err)))}>
+                <FileText /> {t("questionbank.gift.export", "Export GIFT")}
+              </DropdownMenuItem>
               {category.canEdit && (
                 <>
                   <DropdownMenuItem onClick={() => fileRef.current?.click()}>
                     <Upload /> Import JSON
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setGiftImport(true)}>
+                    <Upload /> {t("questionbank.gift.importMenu", "Import GIFT…")}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setSubCat(true)}>
                     <FolderPlus /> New sub-category
@@ -317,6 +327,7 @@ function CategoryQuestions({ courseId, category, onDeleted }: { courseId: string
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+          {giftImport && <GiftImportDialog category={category} open onOpenChange={setGiftImport} onImported={() => void refresh()} />}
           <input
             ref={fileRef}
             type="file"

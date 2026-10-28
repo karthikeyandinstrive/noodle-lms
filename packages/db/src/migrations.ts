@@ -1,5 +1,6 @@
 import path from "node:path";
 import { getClient } from "./client";
+import { syncDefaultCapabilities } from "./capabilities-sync";
 import { applyRowLevelSecurity } from "./rls";
 
 const migrationsFolder = path.resolve(import.meta.dirname, "../migrations");
@@ -15,5 +16,6 @@ export async function runMigrations() {
     await migrate(db as never, { migrationsFolder });
   }
   await applyRowLevelSecurity(db);
+  await syncDefaultCapabilities(db);
   return driver;
 }

@@ -7,6 +7,8 @@ import { createSession } from "../../core/auth";
 import { randomToken, sha256 } from "../../core/crypto";
 import { AppError, badRequest, unauthorized } from "../../core/errors";
 import { capabilityMap } from "../../core/rbac";
+import { getEnabledMfa, hasSystemRole, issueMfaChallenge, mfaEnrollmentRequired } from "../mfa/service";
+import { isSsoEnforced } from "../sso/service";
 
 export const zPassword = z
   .string()
@@ -20,7 +22,52 @@ const LOCK_MINUTES = 15;
 // Verifying against a fixed hash when the user does not exist keeps response time constant (no user enumeration).
 let dummyHash: Promise<string> | undefined;
 
-export async function authenticate(tx: DB, req: FastifyRequest, email: string, password: string) {
+type UserRow = typeof users.$inferSelect;
+
+export type LoginOutcome =
+  | { kind: "session"; user: UserRow; token: string; mfaEnrollmentRequired: boolean }
+  | { kind: "mfa"; user: UserRow; challengeToken: string };
+
+/**
+ * Errors that must be raised *after* the transaction commits (so the
+ * failed-attempt counter is persisted instead of rolled back). Use with
+ * `throwIfDeferred(await req.tenant(...))`.
+ */
+export class DeferredError {
+  constructor(public readonly error: AppError) {}
+}
+export function throwIfDeferred<T>(value: T | DeferredError): T {
+  if (value instanceof DeferredError) throw value.error;
+  return value;
+}
+
+export const accountLocked = () => new AppError(423, "ACCOUNT_LOCKED", "Too many failed attempts. Try again later.");
+export const isLocked = (user: Pick<UserRow, "lockedUntil">) => !!user.lockedUntil && user.lockedUntil > new Date();
+
+/** Counts a failed password or MFA attempt; locks the account after MAX_FAILED (shared counter). */
+export async function recordFailedLogin(tx: DB, user: Pick<UserRow, "id" | "failedLoginCount">) {
+  const failed = user.failedLoginCount + 1;
+  await tx
+    .update(users)
+    .set({ failedLoginCount: failed, lockedUntil: failed >= MAX_FAILED ? new Date(Date.now() + LOCK_MINUTES * 60_000) : null })
+    .where(eq(users.id, user.id));
+}
+
+/** Successful sign-in: reset the counter and create a session. */
+export async function completeLogin(tx: DB, req: FastifyRequest, userId: string) {
+  await tx.update(users).set({ failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() }).where(eq(users.id, userId));
+  return createSession(tx, req, userId);
+}
+
+/**
+ * Password step of sign-in.
+ *  - SSO enforced → only org admins may use a password (break-glass).
+ *  - MFA enabled → no session; returns a single-use challenge token for POST /auth/mfa/verify.
+ *    The failed-attempt counter is NOT reset until the second factor succeeds.
+ *  - Org policy requires MFA for admins and this admin has none → a session that the
+ *    enrollment gate (see ./index.ts) restricts to /auth/me, /auth/mfa/* and logout.
+ */
+export async function authenticate(tx: DB, req: FastifyRequest, email: string, password: string): Promise<LoginOutcome | DeferredError> {
   const [user] = await tx
     .select()
     .from(users)
@@ -32,26 +79,26 @@ export async function authenticate(tx: DB, req: FastifyRequest, email: string, p
     await verify(await dummyHash, password, ARGON2_OPTIONS).catch(() => false);
     throw unauthorized("Invalid email or password");
   }
-  if (user.lockedUntil && user.lockedUntil > new Date()) {
-    throw new AppError(423, "ACCOUNT_LOCKED", "Too many failed attempts. Try again later.");
-  }
+  if (isLocked(user)) throw accountLocked();
   const valid = await verify(user.passwordHash, password, ARGON2_OPTIONS).catch(() => false);
   if (!valid) {
-    const failed = user.failedLoginCount + 1;
-    await tx
-      .update(users)
-      .set({
-        failedLoginCount: failed,
-        lockedUntil: failed >= MAX_FAILED ? new Date(Date.now() + LOCK_MINUTES * 60_000) : null,
-      })
-      .where(eq(users.id, user.id));
-    throw unauthorized("Invalid email or password");
+    await recordFailedLogin(tx, user);
+    return new DeferredError(unauthorized("Invalid email or password"));
   }
   if (user.status !== "active") throw new AppError(403, "ACCOUNT_SUSPENDED", "This account is not active");
 
-  await tx.update(users).set({ failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() }).where(eq(users.id, user.id));
-  const token = await createSession(tx, req, user.id);
-  return { user, token };
+  // Checked after the password so the response doesn't reveal who is an admin.
+  if ((await isSsoEnforced(tx)) && !(await hasSystemRole(tx, req.org.id, user.id, ["org_admin"]))) {
+    throw new AppError(403, "SSO_REQUIRED", "Sign in with your organization's single sign-on provider.");
+  }
+
+  if (await getEnabledMfa(tx, user.id)) {
+    const challengeToken = await issueMfaChallenge(tx, req.org.id, user.id);
+    return { kind: "mfa", user, challengeToken };
+  }
+
+  const token = await completeLogin(tx, req, user.id);
+  return { kind: "session", user, token, mfaEnrollmentRequired: await mfaEnrollmentRequired(tx, req.org, user.id) };
 }
 
 export async function registerUser(
@@ -135,6 +182,12 @@ export async function siteCapabilities(tx: DB, req: FastifyRequest) {
       "badge:manage",
       "report:view_site",
       "calendar:manage_site",
+      "site:manage_sso",
+      "site:view_system",
+      "lti:manage_tools",
+      "message:send",
+      "message:send_any",
+      "course:restore",
     ],
     system.id,
   );

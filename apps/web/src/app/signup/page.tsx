@@ -3,12 +3,14 @@
 import { CheckCircle2, GraduationCap } from "lucide-react";
 import Link from "next/link";
 import { useState, useSyncExternalStore } from "react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ErrorAlert } from "@/components/common";
 import { api } from "@/lib/api";
+import { useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 
 const noopSubscribe = () => () => {};
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/;
@@ -26,6 +28,7 @@ function slugify(name: string) {
 }
 
 export default function SignupPage() {
+  const t = useT();
   const [v, setV] = useState({ name: "", slug: "", firstName: "", lastName: "", email: "", password: "" });
   const [slugEdited, setSlugEdited] = useState(false);
   const [pending, setPending] = useState(false);
@@ -42,7 +45,7 @@ export default function SignupPage() {
     e.preventDefault();
     setError(null);
     if (!slugValid) {
-      setError(new Error("The address must be 3–32 lowercase letters, numbers or dashes, and can't start or end with a dash."));
+      setError(new Error(t("signup.slugInvalid", "The address must be 3–32 lowercase letters, numbers or dashes, and can't start or end with a dash.")));
       return;
     }
     setPending(true);
@@ -63,38 +66,38 @@ export default function SignupPage() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-muted/40 px-4 py-10">
       <div className="mb-6 flex items-center gap-2 text-lg font-semibold">
-        <GraduationCap className="size-6 text-primary" /> LMS
+        <GraduationCap aria-hidden className="size-6 text-primary" /> LMS
       </div>
       <div className="w-full max-w-md">
         {done ? (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <CheckCircle2 className="size-5 text-green-600" /> Your organization is ready
+                <CheckCircle2 aria-hidden className="size-5 text-green-600" /> {t("signup.ready", "Your organization is ready")}
               </CardTitle>
-              <CardDescription>Sign in with the administrator account you just created.</CardDescription>
+              <CardDescription>{t("signup.readyHint", "Sign in with the administrator account you just created.")}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
-              <p>Your learning site address:</p>
+              <p>{t("signup.siteAddressLabel", "Your learning site address:")}</p>
               <p className="rounded-md border bg-muted/50 p-2 font-mono break-all">{done.url}</p>
             </CardContent>
             <CardFooter>
-              <Button className="w-full" render={<a href={loginUrl} />}>
-                Go to sign in
-              </Button>
+              <a href={loginUrl} className={cn(buttonVariants(), "w-full")}>
+                {t("signup.goToSignIn", "Go to sign in")}
+              </a>
             </CardFooter>
           </Card>
         ) : (
           <Card>
             <CardHeader>
-              <CardTitle>Create your organization</CardTitle>
-              <CardDescription>Start free with up to 50 users and 5 courses. Upgrade any time.</CardDescription>
+              <CardTitle>{t("signup.title", "Create your organization")}</CardTitle>
+              <CardDescription>{t("signup.subtitle", "Start free with up to 50 users and 5 courses. Upgrade any time.")}</CardDescription>
             </CardHeader>
             <form onSubmit={submit}>
               <CardContent className="space-y-4">
-                {error ? <ErrorAlert error={error} title="Could not create the organization" /> : null}
+                {error ? <ErrorAlert error={error} title={t("signup.error", "Could not create the organization")} /> : null}
                 <div className="space-y-1.5">
-                  <Label htmlFor="org-name">Organization name</Label>
+                  <Label htmlFor="org-name">{t("signup.orgName", "Organization name")}</Label>
                   <Input
                     id="org-name"
                     required
@@ -106,7 +109,7 @@ export default function SignupPage() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="org-slug">Site address</Label>
+                  <Label htmlFor="org-slug">{t("signup.siteAddress", "Site address")}</Label>
                   <div className="flex items-center gap-1">
                     <Input
                       id="org-slug"
@@ -124,27 +127,27 @@ export default function SignupPage() {
                     {host && <span className="shrink-0 text-sm text-muted-foreground">.{host}</span>}
                   </div>
                   <p id="org-slug-hint" className="text-xs text-muted-foreground">
-                    Lowercase letters, numbers and dashes.
+                    {t("signup.slugHint", "Lowercase letters, numbers and dashes.")}
                   </p>
                 </div>
                 <fieldset className="space-y-4">
-                  <legend className="mb-2 text-sm font-medium">Administrator account</legend>
+                  <legend className="mb-2 text-sm font-medium">{t("signup.adminAccount", "Administrator account")}</legend>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1.5">
-                      <Label htmlFor="adm-first">First name</Label>
+                      <Label htmlFor="adm-first">{t("signup.firstName", "First name")}</Label>
                       <Input id="adm-first" required maxLength={100} autoComplete="given-name" value={v.firstName} onChange={(e) => setV({ ...v, firstName: e.target.value })} />
                     </div>
                     <div className="space-y-1.5">
-                      <Label htmlFor="adm-last">Last name</Label>
+                      <Label htmlFor="adm-last">{t("signup.lastName", "Last name")}</Label>
                       <Input id="adm-last" required maxLength={100} autoComplete="family-name" value={v.lastName} onChange={(e) => setV({ ...v, lastName: e.target.value })} />
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="adm-email">Email</Label>
+                    <Label htmlFor="adm-email">{t("common.email", "Email")}</Label>
                     <Input id="adm-email" type="email" required autoComplete="email" value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })} />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="adm-pass">Password</Label>
+                    <Label htmlFor="adm-pass">{t("signup.password", "Password")}</Label>
                     <Input
                       id="adm-pass"
                       type="password"
@@ -157,17 +160,17 @@ export default function SignupPage() {
                       onChange={(e) => setV({ ...v, password: e.target.value })}
                     />
                     <p id="adm-pass-hint" className="text-xs text-muted-foreground">
-                      At least 10 characters.
+                      {t("signup.passwordHint", "At least 10 characters.")}
                     </p>
                   </div>
                 </fieldset>
               </CardContent>
               <CardFooter className="flex-col items-stretch gap-3">
                 <Button type="submit" disabled={pending}>
-                  {pending ? "Creating…" : "Create organization"}
+                  {pending ? t("signup.creating", "Creating…") : t("signup.submit", "Create organization")}
                 </Button>
                 <Link href="/login" className="text-center text-sm text-muted-foreground hover:underline">
-                  Already have a site? Sign in
+                  {t("signup.haveSite", "Already have a site? Sign in")}
                 </Link>
               </CardFooter>
             </form>

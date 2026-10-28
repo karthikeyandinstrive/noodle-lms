@@ -5,19 +5,19 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { EmptyState, ErrorAlert, HtmlContent, PageHeader, QueryState, formatDate } from "@/components/common";
+import { EmptyState, ErrorAlert, HtmlContent, PageHeader, QueryState } from "@/components/common";
+import { RichTextEditor } from "@/components/rich-text-editor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { useActivity } from "@/features/activities/use-activity";
 import { errorMessage } from "@/lib/api";
+import { useFormat, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { STATUS_LABEL, useGrade, useReopen, useSubmission, useSubmissions, type SubmissionDetail, type SubmissionList } from "./api";
+import { statusLabel, useGrade, useReopen, useSubmission, useSubmissions, type SubmissionDetail, type SubmissionList } from "./api";
 import { FileList, StatusBadge } from "./index";
-import { htmlToPlain, plainToHtml } from "./text";
 
 type Filter = "all" | "needs" | "missing" | "graded";
 
@@ -30,6 +30,7 @@ export function AssignmentGradingPage() {
   const search = useSearchParams();
   const selected = search.get("user");
   const [filter, setFilter] = useState<Filter>("all");
+  const t = useT();
 
   const items = useMemo(() => {
     const all = list.data?.items ?? [];
@@ -65,14 +66,18 @@ export function AssignmentGradingPage() {
       {activity.data && (
         <div>
           <Link href={`/activities/${activityId}`} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-            <ChevronLeft className="size-4" /> {activity.data.name}
+            <ChevronLeft className="size-4" aria-hidden /> {activity.data.name}
           </Link>
           <PageHeader
             className="mt-2"
-            title="Submissions"
+            title={t("assignment.submissions", "Submissions")}
             description={
               list.data
-                ? `${list.data.counts.submitted} submitted · ${list.data.counts.needsGrading} to grade · ${list.data.counts.graded} graded${list.data.blindMarking ? " · Blind marking" : ""}`
+                ? t("assignment.gradingSummary", "{submitted} submitted · {toGrade} to grade · {graded} graded", {
+                    submitted: list.data.counts.submitted,
+                    toGrade: list.data.counts.needsGrading,
+                    graded: list.data.counts.graded,
+                  }) + (list.data.blindMarking ? ` · ${t("assignment.blindMarking", "Blind marking")}` : "")
                 : undefined
             }
           />
@@ -81,7 +86,7 @@ export function AssignmentGradingPage() {
               <div className="grid gap-6 lg:grid-cols-[minmax(260px,340px)_1fr]">
                 <div className={cn("space-y-3", selected && "hidden lg:block")}>
                   <label className="sr-only" htmlFor="sub-filter">
-                    Filter
+                    {t("assignment.filter", "Filter")}
                   </label>
                   <select
                     id="sub-filter"
@@ -89,15 +94,15 @@ export function AssignmentGradingPage() {
                     value={filter}
                     onChange={(e) => setFilter(e.target.value as Filter)}
                   >
-                    <option value="all">All participants ({list.data.items.length})</option>
-                    <option value="needs">Needs grading ({list.data.counts.needsGrading})</option>
-                    <option value="missing">Not submitted</option>
-                    <option value="graded">Graded</option>
+                    <option value="all">{t("assignment.filterAll", "All participants ({n})", { n: list.data.items.length })}</option>
+                    <option value="needs">{t("assignment.filterNeeds", "Needs grading ({n})", { n: list.data.counts.needsGrading })}</option>
+                    <option value="missing">{t("assignment.notSubmitted", "Not submitted")}</option>
+                    <option value="graded">{t("assignment.status.graded", "Graded")}</option>
                   </select>
                   {items.length === 0 ? (
-                    <EmptyState title="Nobody here" />
+                    <EmptyState title={t("assignment.nobodyHere", "Nobody here")} />
                   ) : (
-                    <ul className="divide-y rounded-xl border" aria-label="Participants">
+                    <ul className="divide-y rounded-xl border" aria-label={t("assignment.participants", "Participants")}>
                       {items.map((i) => (
                         <li key={i.userId}>
                           <button
@@ -112,8 +117,8 @@ export function AssignmentGradingPage() {
                             <span className="min-w-0">
                               <span className="block truncate font-medium">{i.displayName}</span>
                               <span className="block text-xs text-muted-foreground">
-                                {i.submission ? STATUS_LABEL[i.submission.status] : "No submission"}
-                                {i.submission?.late && " · late"}
+                                {i.submission ? statusLabel(t, i.submission.status) : t("assignment.noSubmission", "No submission")}
+                                {i.submission?.late && ` · ${t("assignment.lateLower", "late")}`}
                               </span>
                             </span>
                             <span className="shrink-0 text-right text-xs">
@@ -122,7 +127,7 @@ export function AssignmentGradingPage() {
                                   {i.grade}/{list.data.gradeMax}
                                 </span>
                               ) : i.needsGrading ? (
-                                <Badge variant="secondary">To grade</Badge>
+                                <Badge variant="secondary">{t("assignment.toGrade", "To grade")}</Badge>
                               ) : null}
                             </span>
                           </button>
@@ -137,21 +142,24 @@ export function AssignmentGradingPage() {
                     <>
                       <div className="mb-3 flex items-center justify-between gap-2">
                         <Button variant="ghost" size="sm" className="lg:hidden" onClick={() => select(null)}>
-                          <ChevronLeft /> All participants
+                          <ChevronLeft aria-hidden /> {t("assignment.allParticipants", "All participants")}
                         </Button>
                         <div className="ml-auto flex gap-1">
-                          <Button variant="outline" size="sm" disabled={!prev} onClick={() => prev && select(prev.userId)} aria-label="Previous participant">
-                            <ChevronLeft /> Previous
+                          <Button variant="outline" size="sm" disabled={!prev} onClick={() => prev && select(prev.userId)} aria-label={t("assignment.previousParticipant", "Previous participant")}>
+                            <ChevronLeft aria-hidden /> {t("common.previous", "Previous")}
                           </Button>
-                          <Button variant="outline" size="sm" disabled={!next} onClick={() => next && select(next.userId)} aria-label="Next participant">
-                            Next <ChevronRight />
+                          <Button variant="outline" size="sm" disabled={!next} onClick={() => next && select(next.userId)} aria-label={t("assignment.nextParticipant", "Next participant")}>
+                            {t("common.next", "Next")} <ChevronRight aria-hidden />
                           </Button>
                         </div>
                       </div>
                       <SubmissionPanel key={selected} activityId={activityId} userId={selected} list={list.data} onGraded={() => next && select(next.userId)} />
                     </>
                   ) : (
-                    <EmptyState title="Select a participant" description="Pick someone from the list to review and grade their work." />
+                    <EmptyState
+                      title={t("assignment.selectParticipant", "Select a participant")}
+                      description={t("assignment.selectParticipantHint", "Pick someone from the list to review and grade their work.")}
+                    />
                   )}
                 </div>
               </div>
@@ -167,6 +175,8 @@ function SubmissionPanel({ activityId, userId, list, onGraded }: { activityId: s
   const q = useSubmission(activityId, userId);
   const reopen = useReopen(activityId, userId);
   const d = q.data;
+  const t = useT();
+  const fmt = useFormat();
 
   return (
     <QueryState query={q}>
@@ -184,27 +194,29 @@ function SubmissionPanel({ activityId, userId, list, onGraded }: { activityId: s
                 <>
                   <div className="flex flex-wrap items-center gap-2">
                     <StatusBadge status={d.submission.status} late={d.submission.late} />
-                    <span className="text-muted-foreground">Attempt {d.submission.attempt}</span>
-                    {d.submission.submittedAt && <span className="text-muted-foreground">· Submitted {formatDate(d.submission.submittedAt)}</span>}
+                    <span className="text-muted-foreground">{t("assignment.attemptN", "Attempt {n}", { n: d.submission.attempt })}</span>
+                    {d.submission.submittedAt && (
+                      <span className="text-muted-foreground">· {t("assignment.submittedOn", "Submitted {date}", { date: fmt.date(d.submission.submittedAt) })}</span>
+                    )}
                   </div>
                   {d.submission.text ? (
                     <HtmlContent html={d.submission.text} className="max-h-[50vh] overflow-y-auto rounded-lg border bg-muted/20 p-3" />
                   ) : null}
                   <FileList files={d.submission.files} />
-                  {!d.submission.text && !d.submission.files.length && <p className="text-muted-foreground">The submission is empty.</p>}
+                  {!d.submission.text && !d.submission.files.length && <p className="text-muted-foreground">{t("assignment.submissionEmpty", "The submission is empty.")}</p>}
                 </>
               ) : (
-                <p className="text-muted-foreground">No submission yet.</p>
+                <p className="text-muted-foreground">{t("assignment.noSubmissionYet", "No submission yet.")}</p>
               )}
               {d.attempts.length > 1 && (
                 <details className="text-xs text-muted-foreground">
-                  <summary className="cursor-pointer">Previous attempts ({d.attempts.length - 1})</summary>
+                  <summary className="cursor-pointer">{t("assignment.previousAttempts", "Previous attempts ({n})", { n: d.attempts.length - 1 })}</summary>
                   <ul className="mt-2 space-y-1">
                     {d.attempts.slice(1).map((a) => (
                       <li key={a.id}>
-                        Attempt {a.attempt}: {STATUS_LABEL[a.status]}
-                        {a.submittedAt && `, ${formatDate(a.submittedAt)}`}
-                        {a.late && " (late)"}
+                        {t("assignment.attemptN", "Attempt {n}", { n: a.attempt })}: {statusLabel(t, a.status)}
+                        {a.submittedAt && `, ${fmt.date(a.submittedAt)}`}
+                        {a.late && ` (${t("assignment.lateLower", "late")})`}
                       </li>
                     ))}
                   </ul>
@@ -216,7 +228,7 @@ function SubmissionPanel({ activityId, userId, list, onGraded }: { activityId: s
           {d.canGrade ? (
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Grade</CardTitle>
+                <CardTitle className="text-base">{t("assignment.grade", "Grade")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <GradeForm
@@ -235,13 +247,13 @@ function SubmissionPanel({ activityId, userId, list, onGraded }: { activityId: s
                         onClick={async () => {
                           try {
                             await reopen.mutateAsync();
-                            toast.success("Submission reopened: the student can submit a new attempt");
+                            toast.success(t("assignment.reopened", "Submission reopened: the student can submit a new attempt"));
                           } catch (err) {
                             toast.error(errorMessage(err));
                           }
                         }}
                       >
-                        <RotateCcw /> Reopen for a new attempt
+                        <RotateCcw aria-hidden /> {t("assignment.reopenForNewAttempt", "Reopen for a new attempt")}
                       </Button>
                     ) : null
                   }
@@ -252,7 +264,7 @@ function SubmissionPanel({ activityId, userId, list, onGraded }: { activityId: s
             d.feedback && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Feedback</CardTitle>
+                  <CardTitle className="text-base">{t("assignment.feedback", "Feedback")}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm">
                   <p className="font-semibold">
@@ -284,9 +296,11 @@ function GradeForm({
   onGraded: () => void;
   reopen: React.ReactNode;
 }) {
+  const t = useT();
+  const fmt = useFormat();
   const grade = useGrade(activityId, userId);
   const [value, setValue] = useState(d.feedback?.grade != null ? String(d.feedback.grade) : "");
-  const [feedback, setFeedback] = useState(() => htmlToPlain(d.feedback?.feedback));
+  const [feedback, setFeedback] = useState(() => d.feedback?.feedback ?? "");
   const parsed = value.trim() === "" ? null : Number(value);
   const invalid = parsed !== null && (Number.isNaN(parsed) || parsed < 0 || parsed > gradeMax);
   return (
@@ -296,8 +310,8 @@ function GradeForm({
         e.preventDefault();
         if (invalid) return;
         try {
-          await grade.mutateAsync({ grade: parsed, feedback: plainToHtml(feedback) || null });
-          toast.success("Grade saved");
+          await grade.mutateAsync({ grade: parsed, feedback: feedback || null });
+          toast.success(t("assignment.gradeSaved", "Grade saved"));
           onGraded();
         } catch (err) {
           toast.error(errorMessage(err));
@@ -305,7 +319,7 @@ function GradeForm({
       }}
     >
       <div className="max-w-48 space-y-1.5">
-        <Label htmlFor="grade">Grade (out of {gradeMax})</Label>
+        <Label htmlFor="grade">{t("assignment.gradeOutOf", "Grade (out of {max})", { max: gradeMax })}</Label>
         <Input
           id="grade"
           type="number"
@@ -315,24 +329,33 @@ function GradeForm({
           step="any"
           value={value}
           aria-invalid={invalid || undefined}
+          aria-describedby={invalid ? "grade-error" : undefined}
           onChange={(e) => setValue(e.target.value)}
         />
-        {invalid && <p className="text-xs text-destructive">Enter a number between 0 and {gradeMax}.</p>}
+        {invalid && (
+          <p id="grade-error" className="text-xs text-destructive" role="alert">
+            {t("assignment.gradeRange", "Enter a number between 0 and {max}.", { max: gradeMax })}
+          </p>
+        )}
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="feedback">Feedback</Label>
-        <Textarea id="feedback" rows={6} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+        <Label htmlFor="feedback">{t("assignment.feedback", "Feedback")}</Label>
+        <RichTextEditor id="feedback" minHeight={160} value={feedback} onChange={setFeedback} />
       </div>
       {d.feedback && (
         <p className="text-xs text-muted-foreground">
-          Last graded {formatDate(d.feedback.gradedAt)}
-          {d.feedback.grader && ` by ${d.feedback.grader.firstName} ${d.feedback.grader.lastName}`}
+          {d.feedback.grader
+            ? t("assignment.lastGradedBy", "Last graded {date} by {name}", {
+                date: fmt.date(d.feedback.gradedAt),
+                name: `${d.feedback.grader.firstName} ${d.feedback.grader.lastName}`,
+              })
+            : t("assignment.lastGraded", "Last graded {date}", { date: fmt.date(d.feedback.gradedAt) })}
         </p>
       )}
       {grade.isError && <ErrorAlert error={grade.error} />}
       <div className="flex flex-wrap gap-2">
         <Button type="submit" disabled={grade.isPending || invalid}>
-          {grade.isPending ? "Saving…" : "Save grade"}
+          {grade.isPending ? t("common.saving", "Saving…") : t("assignment.saveGrade", "Save grade")}
         </Button>
         {reopen}
       </div>

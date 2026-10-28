@@ -1,5 +1,7 @@
 /** Payments API shapes (mirror apps/api/src/modules/payments/routes.ts). */
 
+import { useFormat } from "@/lib/i18n";
+
 export type PaymentProvider = "stripe" | "razorpay";
 export type OrderStatus = "pending" | "paid" | "failed" | "refunded" | "cancelled";
 
@@ -50,5 +52,17 @@ export type CheckoutResult =
         prefill: { name: string; email: string };
       };
     };
+
+/** Locale-aware money formatter for amounts in minor units (cents). */
+export function useMoney() {
+  const { number } = useFormat();
+  return (cents: number, currency: string) => {
+    try {
+      return number(cents / 100, { style: "currency", currency });
+    } catch {
+      return `${number(cents / 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+    }
+  };
+}
 
 export const PROVIDER_LABEL: Record<PaymentProvider, string> = { stripe: "Stripe", razorpay: "Razorpay" };

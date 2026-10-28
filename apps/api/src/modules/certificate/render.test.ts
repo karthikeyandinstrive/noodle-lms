@@ -1,7 +1,8 @@
+import { inflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { PDFDocument } from "pdf-lib";
+import { PDFDict, PDFDocument, PDFName, PDFRawStream } from "pdf-lib";
 import { renderCertificatePdf } from "./pdf";
-import { lineLeft, mmToPt, pageSizeMm, parseHexColor, renderPlaceholders, toEncodable, wrapText } from "./render";
+import { lineLeft, mmToPt, pageSizeMm, parseHexColor, renderPlaceholders, wrapText } from "./render";
 
 const values = { fullname: "Ada Lovelace", coursename: "Analytical Engines", date: "October 28, 2026", code: "ABCD-EFGH-JKLM", grade: "95%", orgname: "Acme" };
 
@@ -41,11 +42,6 @@ describe("layout helpers", () => {
     expect(parseHexColor("#ff0000")).toEqual({ r: 1, g: 0, b: 0 });
     expect(parseHexColor("nope")).toEqual({ r: 0.1, g: 0.1, b: 0.1 });
   });
-  it("maps unsupported characters for standard fonts", () => {
-    const latin = new Set([..."Zoe Dvorak?é".split("").map((c) => c.codePointAt(0)!)]);
-    expect(toEncodable("Zoé Dvořák", latin)).toBe("Zoé Dvorak");
-    expect(toEncodable("李", latin)).toBe("?");
-  });
 });
 
 describe("renderCertificatePdf", () => {
@@ -66,5 +62,48 @@ describe("renderCertificatePdf", () => {
     const { width, height } = doc.getPage(0).getSize();
     expect(width).toBeCloseTo(mmToPt(297));
     expect(height).toBeCloseTo(mmToPt(210));
+  });
+
+  it("embeds DejaVu Sans subsets that cover Latin accents, Greek and Cyrillic", async () => {
+    const name = "Zoë Ñúñez — Ελληνικά — Кириллица";
+    const pdf = await renderCertificatePdf({
+      orientation: "landscape",
+      elements: [
+        { type: "text", x: 148.5, y: 40, fontSize: 36, align: "center", text: "{{fullname}}" },
+        { type: "text", x: 20, y: 90, width: 257, fontSize: 14, align: "left", text: "Awarded to {{fullname}}" },
+      ],
+      values: { ...values, fullname: name },
+      verifyUrl: "https://acme.example.com/verify/ABCD-EFGH-JKLM",
+    });
+    const doc = await PDFDocument.load(pdf);
+
+    // Both fonts are embedded (pdf-lib names subsets DejaVuSans-<n> / DejaVuSans-Bold-<n>), not standard Helvetica.
+    const baseFonts: string[] = [];
+    const cmaps: string[] = [];
+    for (const [, obj] of doc.context.enumerateIndirectObjects()) {
+      if (obj instanceof PDFDict && obj.get(PDFName.of("Type")) === PDFName.of("Font")) {
+        const base = obj.get(PDFName.of("BaseFont"));
+        if (base) baseFonts.push(base.toString());
+      }
+      if (obj instanceof PDFRawStream) {
+        let body: string;
+        try {
+          body = inflateSync(obj.contents).toString("latin1");
+        } catch {
+          body = Buffer.from(obj.contents).toString("latin1");
+        }
+        if (body.includes("begincmap")) cmaps.push(body.toUpperCase());
+      }
+    }
+    expect(baseFonts.some((f) => /^\/DejaVuSans-\d+$/.test(f))).toBe(true);
+    expect(baseFonts.some((f) => /^\/DejaVuSans-Bold-\d+$/.test(f))).toBe(true);
+    expect(baseFonts.some((f) => f.includes("Helvetica"))).toBe(false);
+
+    // Every character of the name is mapped back to its code point (ToUnicode), i.e. it was not replaced or stripped.
+    const all = cmaps.join("\n");
+    for (const ch of new Set(name.replace(/\s/g, ""))) {
+      const hex = ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0");
+      expect(all, `glyph for ${ch} (U+${hex})`).toContain(`<${hex}>`);
+    }
   });
 });

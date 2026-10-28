@@ -11,7 +11,9 @@ export type ActivityType =
   | "attendance"
   | "interactive"
   | "video"
-  | "certificate";
+  | "certificate"
+  | "lti"
+  | "scorm";
 
 export type CompletionRule = "none" | "manual" | "view" | "submit" | "grade" | "pass";
 
@@ -54,6 +56,8 @@ export type CourseOverview = {
   sections: Section[];
   enrolled: boolean;
   capabilities: Record<string, boolean>;
+  /** Course context id; non-null only for users with role:assign. */
+  contextId: string | null;
 };
 
 export type ActivityDetail = {

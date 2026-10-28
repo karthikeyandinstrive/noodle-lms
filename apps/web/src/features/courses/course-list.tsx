@@ -5,20 +5,22 @@ import { BookOpen, Search } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { EmptyState, QueryState } from "@/components/common";
 import { api, fileUrl, type Paged } from "@/lib/api";
+import { useLocale, useT } from "@/lib/i18n";
 import type { Course } from "@/lib/types";
 
-export function formatPrice(cents: number | null, currency: string | null) {
+export function formatPrice(cents: number | null, currency: string | null, locale?: string) {
   if (!cents) return null;
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: currency ?? "USD" }).format(cents / 100);
+  return new Intl.NumberFormat(locale, { style: "currency", currency: currency ?? "USD" }).format(cents / 100);
 }
 
 export function CourseCard({ course }: { course: Course }) {
-  const price = formatPrice(course.priceCents, course.currency);
+  const t = useT();
+  const price = formatPrice(course.priceCents, course.currency, useLocale());
   return (
     <Link href={`/courses/${course.id}`} className="group">
       <Card className="h-full overflow-hidden pt-0 transition-shadow group-hover:shadow-md">
@@ -27,14 +29,14 @@ export function CourseCard({ course }: { course: Course }) {
             // eslint-disable-next-line @next/next/no-img-element
             <img src={fileUrl(course.imageFileId, true)} alt="" className="h-full w-full object-cover" />
           ) : (
-            <BookOpen className="size-10 text-primary/50" />
+            <BookOpen aria-hidden className="size-10 text-primary/50" />
           )}
         </div>
         <CardHeader>
           <div className="flex flex-wrap gap-1.5">
             <Badge variant="secondary">{course.shortname}</Badge>
-            {!course.visible && <Badge variant="outline">Hidden</Badge>}
-            {course.enrolled && <Badge>Enrolled</Badge>}
+            {!course.visible && <Badge variant="outline">{t("common.hidden", "Hidden")}</Badge>}
+            {course.enrolled && <Badge>{t("course.enrolledBadge", "Enrolled")}</Badge>}
             {price && !course.enrolled && <Badge variant="outline">{price}</Badge>}
           </div>
           <CardTitle className="line-clamp-2 text-base">{course.fullname}</CardTitle>
@@ -50,6 +52,7 @@ export function CourseCard({ course }: { course: Course }) {
 }
 
 export function CourseList({ mine }: { mine: boolean }) {
+  const t = useT();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const query = useQuery({
@@ -61,16 +64,17 @@ export function CourseList({ mine }: { mine: boolean }) {
   return (
     <div className="space-y-4">
       <div className="relative max-w-sm">
-        <Search className="absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
+        <Search aria-hidden className="absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
         <Input
           className="pl-8"
-          placeholder="Search courses"
+          type="search"
+          placeholder={t("catalog.search", "Search courses")}
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);
             setPage(1);
           }}
-          aria-label="Search courses"
+          aria-label={t("catalog.search", "Search courses")}
         />
       </div>
       <QueryState query={query}>
@@ -84,21 +88,27 @@ export function CourseList({ mine }: { mine: boolean }) {
             {pages > 1 && (
               <div className="flex items-center justify-center gap-2">
                 <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                  Previous
+                  {t("common.previous", "Previous")}
                 </Button>
-                <span className="text-sm text-muted-foreground">
-                  Page {page} of {pages}
+                <span className="text-sm text-muted-foreground" aria-live="polite">
+                  {t("catalog.pageOf", "Page {page} of {pages}", { page, pages })}
                 </span>
                 <Button variant="outline" size="sm" disabled={page >= pages} onClick={() => setPage(page + 1)}>
-                  Next
+                  {t("common.next", "Next")}
                 </Button>
               </div>
             )}
           </>
         ) : (
           <EmptyState
-            title={mine ? "You're not enrolled in any courses yet" : "No courses found"}
-            action={mine ? <Button render={<Link href="/catalog" />}>Browse the catalog</Button> : undefined}
+            title={mine ? t("dashboard.notEnrolled", "You're not enrolled in any courses yet") : t("catalog.noCourses", "No courses found")}
+            action={
+              mine ? (
+                <Link href="/catalog" className={buttonVariants()}>
+                  {t("dashboard.browseCatalog", "Browse the catalog")}
+                </Link>
+              ) : undefined
+            }
           />
         )}
       </QueryState>
