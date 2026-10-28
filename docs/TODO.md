@@ -3,6 +3,12 @@
 Last updated 2026-10-28 (branch `feature/initial-lms`).
 Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3** future scope.
 
+## Now — next steps
+
+- [ ] **Open the pull request** `feature/initial-lms` → `main` at https://github.com/karthikeyandinstrive/noodle-lms/pull/new/feature/initial-lms. Opening it starts CI.
+- [ ] **Decide repository visibility.** `karthikeyandinstrive/noodle-lms` is currently **public**; switch it to private in Settings → General if needed. No secrets are committed.
+- [ ] **Check the first CI run** (typecheck, lint, tests, build, PostgreSQL 16 migrations, Playwright E2E, dependency audit) and fix anything that fails.
+
 ## P0 — Before production (needs infrastructure or accounts, not code)
 
 - [ ] **Run on real PostgreSQL 16.** Locally everything ran on embedded PGlite. CI (`.github/workflows/ci.yml` → `postgres` job) runs migrations and the seed against Postgres once the repo has a remote. The `lms_app` role needs `CREATEROLE`, or a DBA must create it.
@@ -12,7 +18,6 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 - [ ] **LTI 1.3 against a real tool** (e.g. the IMS reference tool) and **SCORM** with real packages (SCORM Cloud samples).
 - [ ] **H5P player live check.** It loads `h5p-standalone@3.6.0` from jsDelivr with no SRI hash.
 - [ ] **Production secrets and TLS**: `ENCRYPTION_KEY`, `URL_SIGNING_SECRET`, `SMTP_URL`, `REDIS_URL` (required with more than one API instance), `METRICS_TOKEN`, storage and Stripe keys.
-- [ ] **Push to a remote** and open a PR, so CI runs.
 
 ## P1 — Soon
 
@@ -60,3 +65,4 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 - [x] Plan limits enforced, completion re-evaluation when activity rules change
 - [x] Dependencies upgraded (zod 4, drizzle 0.45, nodemailer 10, vitest 5): **0 high/critical** vulnerabilities
 - [x] **396 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
+- [x] Pushed to GitHub: `karthikeyandinstrive/noodle-lms` (`main` + `feature/initial-lms`)
