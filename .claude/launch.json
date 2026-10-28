@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "lms",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "npm run db:migrate && PORT=4100 APP_URL=http://localhost:3100 npx concurrently -n api,web \"npm run dev -w @lms/api\" \"API_URL=http://localhost:4100 npx -w @lms/web next dev --port 3100\""],
+      "port": 3100
+    }
+  ]
+}

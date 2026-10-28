@@ -1,26 +1,30 @@
 {
-  "name": "lms-moodle-v1",
-  "version": "0.1.0",
+  "name": "lms",
   "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
   },
-  "dependencies": {
-    "next": "16.4.3",
-    "react": "19.3.0",
-    "react-dom": "19.3.0"
+  "scripts": {
+    "dev": "npm run db:migrate && concurrently -n api,web -c blue,green \"npm run dev -w @lms/api\" \"npm run dev -w @lms/web\"",
+    "dev:api": "npm run dev -w @lms/api",
+    "dev:web": "npm run dev -w @lms/web",
+    "build": "npm run build -w @lms/api && npm run build -w @lms/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:generate": "npm run generate -w @lms/db",
+    "db:migrate": "npm run migrate -w @lms/db",
+    "db:seed": "npm run seed -w @lms/db",
+    "db:reset": "npm run reset -w @lms/db",
+    "openapi:export": "npm run openapi:export -w @lms/api"
   },
   "devDependencies": {
-    "@tailwindcss/turbopack": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.4.3",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
   }
 }
