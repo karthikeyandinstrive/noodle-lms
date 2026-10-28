@@ -92,7 +92,7 @@ e2e/                      Playwright specs + server start script
 
 - Branch `feature/initial-lms` is pushed to https://github.com/karthikeyandinstrive/noodle-lms
   (`main` holds only the Create Next App scaffold). **The PR is not opened yet**; opening it runs CI.
-- 411 unit/integration tests and 8 E2E tests pass. Typecheck, lint and the production build are clean.
+- 417 unit/integration tests and 8 E2E tests pass. Typecheck, lint and the production build are clean.
   `npm audit` reports no high or critical findings.
 - **Never tested against real services:** PostgreSQL 16 (only PGlite so far), the Docker Compose
   stack, Stripe/Razorpay, real SSO IdPs, real LTI tools/SCORM packages, the H5P player.

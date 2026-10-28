@@ -120,9 +120,10 @@ const settings = z.object({
   openInNewWindow: z.boolean().default(false),
 });
 
-async function assertUsableTool(tx: DB, toolId: string) {
+/** The tool must be enabled and either organization-wide or registered for this course. */
+async function assertUsableTool(tx: DB, toolId: string, courseId: string) {
   const tool = await toolById(tx, toolId);
-  if (!tool || !tool.enabled) throw badRequest("Choose an enabled external tool");
+  if (!tool || !tool.enabled || (tool.courseId && tool.courseId !== courseId)) throw badRequest("Choose an enabled external tool");
   return tool;
 }
 
@@ -144,7 +145,7 @@ export function setupLtiActivity() {
     label: "External tool",
     settings,
     async create(tx, { activity }, s) {
-      await assertUsableTool(tx, s.toolId);
+      await assertUsableTool(tx, s.toolId, activity.courseId);
       await tx.insert(ltiLinks).values({
         organizationId: activity.organizationId,
         activityId: activity.id,
@@ -161,7 +162,7 @@ export function setupLtiActivity() {
       if (!row) throw badRequest("External tool settings are missing");
       const patch: Partial<typeof ltiLinks.$inferInsert> = {};
       if (s.toolId !== undefined && s.toolId !== row.toolId) {
-        await assertUsableTool(tx, s.toolId);
+        await assertUsableTool(tx, s.toolId, activity.courseId);
         patch.toolId = s.toolId;
       }
       if (s.targetLinkUri !== undefined) patch.targetLinkUri = checkTargetLink(s.targetLinkUri);

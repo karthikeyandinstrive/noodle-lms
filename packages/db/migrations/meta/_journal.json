@@ -36,6 +36,13 @@
       "when": 1793203077289,
       "tag": "0004_lti_deep_linking",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793205308311,
+      "tag": "0005_lti_course_tools",
+      "breakpoints": true
     }
   ]
 }

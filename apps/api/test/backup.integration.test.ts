@@ -111,6 +111,19 @@ beforeAll(async () => {
   expect((await student.req("POST", `/assignments/${act.assignment}/submit`, {})).status).toBe(200);
   const learnerId = (await student.req("GET", "/auth/me")).body.user.id;
   expect((await admin.req("POST", `/assignments/${act.assignment}/submissions/${learnerId}/grade`, { grade: 32, feedback: "<p>Good work</p>" })).status).toBe(200);
+
+  // A finished quiz attempt (on a visible quiz) and an attendance record.
+  await make("quiz2", { type: "quiz", sectionId: general, name: "Warm-up quiz", settings: { attemptsAllowed: 0, gradeMax: 10 } });
+  expect((await admin.req("POST", `/quizzes/${act.quiz2}/slots`, { questionIds: [q.tf] })).status).toBe(200);
+  const attempt = await student.req("POST", `/quizzes/${act.quiz2}/attempts`, {});
+  expect(attempt.status, JSON.stringify(attempt.body)).toBe(200);
+  const detail = await student.req("GET", `/quizzes/${act.quiz2}/attempts/${attempt.body.attemptId}`);
+  await student.req("PUT", `/quizzes/${act.quiz2}/attempts/${attempt.body.attemptId}/responses`, { responses: [{ slotId: detail.body.questions[0].slotId, response: { value: true } }] });
+  expect((await student.req("POST", `/quizzes/${act.quiz2}/attempts/${attempt.body.attemptId}/finish`, {})).status).toBe(200);
+  await make("attendance", { type: "attendance", sectionId: general, name: "Lab attendance", settings: {} });
+  const sessions = await admin.req("POST", `/attendance/${act.attendance}/sessions`, { startsAt: "2030-02-01T09:00:00.000Z" });
+  expect(sessions.status, JSON.stringify(sessions.body)).toBe(201);
+  expect((await admin.req("PUT", `/attendance/${act.attendance}/sessions/${sessions.body.ids[0]}/records`, { records: [{ userId: learnerId, status: "late", remarks: "Bus" }] })).status).toBe(200);
   await runJobs();
 });
 
@@ -170,14 +183,14 @@ describe("restore", () => {
     expect(row.body.status, row.body.error).toBe("done");
     restoredId = row.body.courseId;
     expect(restoredId).not.toBe(courseId);
-    expect(row.body.report.counts).toMatchObject({ activities: 6, questions: 2, quizSlots: 2, sections: 2, groups: 1 });
+    expect(row.body.report.counts).toMatchObject({ activities: 8, questions: 2, quizSlots: 3, sections: 2, groups: 1 });
     expect(row.body.report.unsupported.join(" ")).toMatch(/User data/);
 
     const overview = await admin.req("GET", `/courses/${restoredId}`);
     expect(overview.body.course).toMatchObject({ fullname: "Chemistry 101 (copy)", shortname: "CHEM101_1", summary: "<p>Atoms</p>" });
     expect(overview.body.sections.map((s: { title: string }) => s.title)).toEqual(["General", "Week 2"]);
     const all = overview.body.sections.flatMap((s: { activities: { id: string; name: string; type: string; visible: boolean }[] }) => s.activities);
-    expect(all.map((a: { name: string }) => a.name)).toEqual(["Welcome", "Periodic table", "Safety notes", "Lab report", "Questions", "Atoms quiz"]);
+    expect(all.map((a: { name: string }) => a.name)).toEqual(["Welcome", "Periodic table", "Safety notes", "Warm-up quiz", "Lab attendance", "Lab report", "Questions", "Atoms quiz"]);
     const byName = (n: string) => all.find((a: { name: string }) => a.name === n)!;
     for (const a of all) expect(Object.values(act)).not.toContain(a.id);
     expect(byName("Atoms quiz").visible).toBe(false);
@@ -221,7 +234,7 @@ describe("restore", () => {
     expect(groups.body.map((g: { name: string }) => g.name)).toEqual(["Lab A"]);
     // The original is untouched.
     const original = await admin.req("GET", `/courses/${courseId}`);
-    expect(original.body.sections.flatMap((s: { activities: unknown[] }) => s.activities)).toHaveLength(6);
+    expect(original.body.sections.flatMap((s: { activities: unknown[] }) => s.activities)).toHaveLength(8);
   });
 
   it("restores across organizations and enrols users that exist by email", async () => {
@@ -271,6 +284,16 @@ describe("restore", () => {
     const grades = await learner.req("GET", `/grades/courses/${newCourse}/me`);
     expect(JSON.stringify(grades.body)).toContain("32");
 
+    // Their finished quiz attempt and attendance record came across.
+    expect(row.body.report.counts).toMatchObject({ quizAttempts: 1, attendanceRecords: 1 });
+    const acts = overview.body.sections.flatMap((s: { activities: { id: string; name: string }[] }) => s.activities);
+    const warmup = acts.find((a: { name: string }) => a.name === "Warm-up quiz");
+    const myQuiz = await learner.req("GET", `/quizzes/${warmup.id}`);
+    expect(JSON.stringify(myQuiz.body)).toContain("finished");
+    const lab = acts.find((a: { name: string }) => a.name === "Lab attendance");
+    const myAttendance = await learner.req("GET", `/attendance/${lab.id}/report/me`);
+    expect(JSON.stringify(myAttendance.body)).toContain("late");
+
     // The follow-up is re-attached to the student's opening post.
     const forum = overview.body.sections.flatMap((s: { activities: { id: string; name: string }[] }) => s.activities).find((a: { name: string }) => a.name === "Questions");
     const list = await learner.req("GET", `/forums/${forum.id}/discussions`);
@@ -310,6 +333,20 @@ function tarEntry(name: string, data: string) {
   return Buffer.concat([h, body, Buffer.alloc((512 - (body.length % 512)) % 512)]);
 }
 
+/** Moodle 4.x question bank: a multichoice question with two versions, a true/false and an unsupported type. */
+const MOODLE_QUESTIONS = `<?xml version="1.0" encoding="UTF-8"?><question_categories>
+<question_category id="7"><name>top</name><parent>0</parent><question_bank_entries></question_bank_entries></question_category>
+<question_category id="8"><name>Mechanics questions</name><parent>7</parent><question_bank_entries>
+  <question_bank_entry id="100"><question_version><question_versions id="1"><version>1</version><questions><question id="500"><parent>0</parent><name>Newton v1</name><questiontext>&lt;p&gt;First law?&lt;/p&gt;</questiontext><generalfeedback></generalfeedback><defaultmark>1.0000000</defaultmark><qtype>multichoice</qtype>
+    <plugin_qtype_multichoice_question><answers><answer id="1"><answertext>&lt;p&gt;Inertia&lt;/p&gt;</answertext><fraction>1.0000000</fraction><feedback>Yes</feedback></answer><answer id="2"><answertext>Gravity</answertext><fraction>0.0000000</fraction><feedback></feedback></answer></answers><multichoice id="1"><single>1</single></multichoice></plugin_qtype_multichoice_question></question></questions></question_versions>
+    <question_versions id="2"><version>2</version><questions><question id="501"><parent>0</parent><name>Newton</name><questiontext>&lt;p&gt;Newton's first law is about?&lt;/p&gt;</questiontext><generalfeedback></generalfeedback><defaultmark>1.0000000</defaultmark><qtype>multichoice</qtype>
+    <plugin_qtype_multichoice_question><answers><answer id="3"><answertext>Inertia</answertext><fraction>1.0000000</fraction><feedback></feedback></answer><answer id="4"><answertext>Friction &amp;amp; drag</answertext><fraction>0.0000000</fraction><feedback></feedback></answer></answers><multichoice id="2"><single>1</single></multichoice></plugin_qtype_multichoice_question></question></questions></question_versions></question_version></question_bank_entry>
+  <question_bank_entry id="101"><question_version><question_versions id="3"><version>1</version><questions><question id="502"><parent>0</parent><name>Mass</name><questiontext>Mass is a vector</questiontext><defaultmark>1</defaultmark><qtype>truefalse</qtype>
+    <plugin_qtype_truefalse_question><answers><answer id="10"><answertext>True</answertext><fraction>0</fraction></answer><answer id="11"><answertext>False</answertext><fraction>1</fraction></answer></answers><truefalse id="1"><trueanswer>10</trueanswer><falseanswer>11</falseanswer></truefalse></plugin_qtype_truefalse_question></question></questions></question_versions></question_version></question_bank_entry>
+  <question_bank_entry id="102"><question_version><question_versions id="4"><version>1</version><questions><question id="503"><parent>0</parent><name>Calc</name><questiontext>x</questiontext><qtype>calculated</qtype></question></questions></question_versions></question_version></question_bank_entry>
+</question_bank_entries></question_category>
+</question_categories>`;
+
 function mbz() {
   const activity = (id: number, mod: string, section: number, title: string) =>
     `<activity><moduleid>${id}</moduleid><sectionid>${section}</sectionid><modulename>${mod}</modulename><title>${title}</title><directory>activities/${mod}_${id}</directory></activity>`;
@@ -342,7 +379,8 @@ function mbz() {
     ["activities/forum_14/module.xml", module(14, "forum", 0)],
     ["activities/forum_14/forum.xml", `<activity id="4" moduleid="14" modulename="forum"><forum id="4"><type>qanda</type><name>Talk</name><intro>Discuss</intro></forum></activity>`],
     ["activities/quiz_15/module.xml", module(15, "quiz")],
-    ["activities/quiz_15/quiz.xml", `<activity id="5" moduleid="15" modulename="quiz"><quiz id="5"><name>Test</name><intro></intro><timelimit>600</timelimit><attempts_number>2</attempts_number><grademethod>3</grademethod><grade>10</grade></quiz></activity>`],
+    ["activities/quiz_15/quiz.xml", `<activity id="5" moduleid="15" modulename="quiz"><quiz id="5"><name>Test</name><intro></intro><timelimit>600</timelimit><attempts_number>2</attempts_number><grademethod>3</grademethod><grade>10</grade><question_instances><question_instance id="1"><slot>1</slot><maxmark>2.0000000</maxmark><question_reference id="1"><questionbankentryid>100</questionbankentryid><version>$@NULL@$</version></question_reference></question_instance><question_instance id="2"><slot>2</slot><maxmark>1.0000000</maxmark><question_reference id="2"><questionbankentryid>101</questionbankentryid></question_reference></question_instance><question_instance id="3"><slot>3</slot><maxmark>1.0000000</maxmark><question_reference id="3"><questionbankentryid>102</questionbankentryid></question_reference></question_instance></question_instances></quiz></activity>`],
+    ["questions.xml", MOODLE_QUESTIONS],
     ["activities/label_16/module.xml", module(16, "label")],
     ["activities/label_16/label.xml", `<activity id="6" moduleid="16" modulename="label"><label id="6"><name>Note</name><intro>&lt;p&gt;Bring a calculator&lt;/p&gt;</intro></label></activity>`],
   ];
@@ -359,7 +397,9 @@ describe("Moodle .mbz import", () => {
     expect(row.body.status, row.body.error).toBe("done");
     expect(row.body.report.source.format).toBe("moodle");
     expect(row.body.report.unsupported.join(" ")).toMatch(/glossary/);
-    expect(row.body.report.warnings.join(" ")).toMatch(/Quiz "Test" was imported without questions/);
+    expect(row.body.report.unsupported.join(" ")).toMatch(/1 Moodle question skipped \(type "calculated"\)/);
+    expect(row.body.report.warnings.join(" ")).toMatch(/Quiz "Test": 1 question slot/);
+    expect(row.body.report.counts.questions).toBe(2);
 
     const overview = await admin.req("GET", `/courses/${row.body.courseId}`);
     expect(overview.body.course).toMatchObject({ fullname: "Moodle Physics", shortname: "PHY", format: "weeks" });
@@ -373,5 +413,14 @@ describe("Moodle .mbz import", () => {
     expect(new Date(assign.body.settings.dueAt).getTime()).toBe(1893456000 * 1000);
     const quiz = await admin.req("GET", `/activities/${s2[2].id}`);
     expect(quiz.body.settings).toMatchObject({ timeLimitSeconds: 600, attemptsAllowed: 2, gradeMethod: "first" });
+
+    // The question bank and the quiz's slots came across.
+    const slots = await admin.req("GET", `/quizzes/${s2[2].id}/slots`);
+    expect(slots.body.slots.map((x: { name: string; maxMark: number; type: string }) => [x.name, x.maxMark, x.type])).toEqual([
+      ["Newton", 2, "multichoice"],
+      ["Mass", 1, "truefalse"],
+    ]);
+    const cats = await admin.req("GET", `/question-bank/categories?courseId=${row.body.courseId}`);
+    expect(cats.body.map((c: { name: string }) => c.name)).toEqual(expect.arrayContaining(["top", "Mechanics questions"]));
   });
 });

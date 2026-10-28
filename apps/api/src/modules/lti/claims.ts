@@ -36,12 +36,13 @@ export const SCOPES = {
   lineItem: "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem",
   lineItemReadonly: "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem.readonly",
   score: "https://purl.imsglobal.org/spec/lti-ags/scope/score",
+  result: "https://purl.imsglobal.org/spec/lti-ags/scope/result.readonly",
   memberships: "https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly",
 } as const;
 
 /** Services a tool may be granted (tool.scopes is a subset of these). */
 export const SUPPORTED_SCOPES: string[] = Object.values(SCOPES);
-export const AGS_SCOPES: string[] = [SCOPES.lineItem, SCOPES.lineItemReadonly, SCOPES.score];
+export const AGS_SCOPES: string[] = [SCOPES.lineItem, SCOPES.lineItemReadonly, SCOPES.score, SCOPES.result];
 
 export const ROLES = {
   learner: "http://purl.imsglobal.org/vocab/lis/v2/membership#Learner",
@@ -57,6 +58,7 @@ export const MEDIA = {
   lineItem: "application/vnd.ims.lis.v2.lineitem+json",
   lineItemContainer: "application/vnd.ims.lis.v2.lineitemcontainer+json",
   score: "application/vnd.ims.lis.v1.score+json",
+  resultContainer: "application/vnd.ims.lis.v2.resultcontainer+json",
   memberships: "application/vnd.ims.lti-nrps.v2.membershipcontainer+json",
 } as const;
 

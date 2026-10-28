@@ -137,9 +137,9 @@ function DeepLinkPanel({ activityId, toolId, savedToolId }: { activityId: string
   );
 }
 
-function SettingsFields({ value, onChange, activityId }: SettingsFieldsProps) {
+function SettingsFields({ value, onChange, activityId, courseId }: SettingsFieldsProps) {
   const t = useT();
-  const tools = useQuery({ queryKey: ["lti", "tools", "available"], queryFn: () => api<AvailableTool[]>("/lti/tools/available") });
+  const tools = useQuery({ queryKey: ["lti", "tools", "available", courseId], queryFn: () => api<AvailableTool[]>(`/lti/tools/available?courseId=${courseId}`) });
   const [text, setText] = useState(() => toLines(value.customParams as Record<string, string> | undefined));
   const [badLine, setBadLine] = useState<string | null>(null);
   const gradeMax = value.gradeMax as number | null | undefined;

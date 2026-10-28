@@ -49,6 +49,7 @@ const AGS = [
   "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem",
   "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem.readonly",
   "https://purl.imsglobal.org/spec/lti-ags/scope/score",
+  "https://purl.imsglobal.org/spec/lti-ags/scope/result.readonly",
 ];
 const AGS_SCORE = "https://purl.imsglobal.org/spec/lti-ags/scope/score";
 const NRPS = ["https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly"];
@@ -133,7 +134,7 @@ function ToolConfigPanel({ toolId }: { toolId: string }) {
   );
 }
 
-function ToolForm({ tool, onDone }: { tool?: Tool; onDone: () => void }) {
+function ToolForm({ tool, courseId, onDone }: { tool?: Tool; courseId?: string; onDone: () => void }) {
   const t = useT();
   const qc = useQueryClient();
   const [v, setV] = useState<Form>(() => toForm(tool));
@@ -155,7 +156,7 @@ function ToolForm({ tool, onDone }: { tool?: Tool; onDone: () => void }) {
         sharePersonalData: v.sharePersonalData,
         enabled: v.enabled,
       };
-      return tool ? api<Tool>(`/lti/tools/${tool.id}`, { method: "PATCH", body }) : api<Tool>("/lti/tools", { body });
+      return tool ? api<Tool>(`/lti/tools/${tool.id}`, { method: "PATCH", body }) : api<Tool>("/lti/tools", { body: { ...body, courseId: courseId ?? null } });
     },
     onSuccess: () => {
       toast.success(tool ? t("lti.admin.saved", "Tool saved") : t("lti.admin.created", "Tool registered. Copy the platform details into the tool."));
@@ -369,9 +370,32 @@ function KeysCard() {
   );
 }
 
+/** Tool list with add/edit: the organization's tools, or one course's own tools. */
+function ToolList({ courseId, editing, setEditing }: { courseId?: string; editing: Tool | "new" | null; setEditing: (v: Tool | "new" | null) => void }) {
+  const t = useT();
+  const tools = useQuery({
+    queryKey: [...toolsKey, courseId ?? "organization"],
+    queryFn: () => api<Tool[]>(courseId ? `/lti/tools?courseId=${courseId}` : "/lti/tools"),
+  });
+  return (
+    <>
+      {editing !== null && (
+        <ToolForm key={editing === "new" ? "new" : editing.id} tool={editing === "new" ? undefined : editing} courseId={courseId} onDone={() => setEditing(null)} />
+      )}
+      <QueryState query={tools}>
+        {tools.data && tools.data.length === 0 && editing === null && (
+          <EmptyState title={t("lti.admin.empty", "No tools yet")} description={t("lti.admin.emptyHelp", "Register a tool to make it available in course activities.")} />
+        )}
+        {tools.data?.map((tool) => (
+          <ToolCard key={tool.id} tool={tool} onEdit={() => setEditing(tool)} />
+        ))}
+      </QueryState>
+    </>
+  );
+}
+
 export function LtiAdmin() {
   const t = useT();
-  const tools = useQuery({ queryKey: toolsKey, queryFn: () => api<Tool[]>("/lti/tools") });
   const [editing, setEditing] = useState<Tool | "new" | null>(null);
 
   return (
@@ -388,17 +412,32 @@ export function LtiAdmin() {
         }
       />
       <div className="max-w-4xl space-y-4">
-        {editing !== null && <ToolForm key={editing === "new" ? "new" : editing.id} tool={editing === "new" ? undefined : editing} onDone={() => setEditing(null)} />}
-        <QueryState query={tools}>
-          {tools.data && tools.data.length === 0 && editing === null && (
-            <EmptyState title={t("lti.admin.empty", "No tools yet")} description={t("lti.admin.emptyHelp", "Register a tool to make it available in course activities.")} />
-          )}
-          {tools.data?.map((tool) => (
-            <ToolCard key={tool.id} tool={tool} onEdit={() => setEditing(tool)} />
-          ))}
-        </QueryState>
+        <ToolList editing={editing} setEditing={setEditing} />
         <KeysCard />
       </div>
     </RequireCapability>
+  );
+}
+
+/** A course's own tools, managed by its teachers (lti:manage_course_tools). */
+export function CourseLtiTools({ courseId, canManage }: { courseId: string; canManage: boolean }) {
+  const t = useT();
+  const [editing, setEditing] = useState<Tool | "new" | null>(null);
+  if (!canManage) return <ErrorAlert error={new Error(t("lti.course.forbidden", "You can't manage this course's external tools."))} />;
+  return (
+    <div className="max-w-4xl space-y-4">
+      <PageHeader
+        title={t("lti.course.title", "Course external tools")}
+        description={t("lti.course.subtitle", "Register LTI 1.3 tools for this course only. Organization-wide tools are managed by administrators.")}
+        actions={
+          editing === null && (
+            <Button onClick={() => setEditing("new")}>
+              <Plus aria-hidden /> {t("lti.admin.add", "Register tool")}
+            </Button>
+          )
+        }
+      />
+      <ToolList courseId={courseId} editing={editing} setEditing={setEditing} />
+    </div>
   );
 }

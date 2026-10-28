@@ -209,7 +209,7 @@ export function RestorePage() {
               <div className="grid gap-0.5">
                 <Label htmlFor="restore-user-data">{t("restore.userData", "Restore user data")}</Label>
                 <p className="text-xs text-muted-foreground">
-                  {t("restore.userDataHelp", "For those people: group membership, grades, assignment submissions and forum posts. You are recorded as the grader. Records of people without an account here are skipped.")}
+                  {t("restore.userDataHelp", "For those people: group membership, grades, assignment submissions, finished quiz attempts, attendance and forum posts. You are recorded as the grader. Records of people without an account here are skipped.")}
                 </p>
               </div>
             </div>

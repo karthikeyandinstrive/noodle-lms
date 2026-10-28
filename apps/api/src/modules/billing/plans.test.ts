@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { exceedsLimit, planForSubscriptionStatus, planLimits } from "./plans";
+import { exceedsLimit, limitsEnforced, planForSubscriptionStatus, planLimits } from "./plans";
 
 describe("plans", () => {
+  it("limits apply in SaaS mode, or when explicitly enforced", () => {
+    expect(limitsEnforced({ SAAS_MODE: false, ENFORCE_PLAN_LIMITS: false })).toBe(false);
+    expect(limitsEnforced({ SAAS_MODE: true, ENFORCE_PLAN_LIMITS: false })).toBe(true);
+    expect(limitsEnforced({ SAAS_MODE: false, ENFORCE_PLAN_LIMITS: true })).toBe(true);
+  });
   it("free plan limits 50 users / 5 courses; pro is unlimited", () => {
     expect(planLimits("free")).toEqual({ users: 50, courses: 5 });
     expect(planLimits("pro")).toEqual({ users: null, courses: null });

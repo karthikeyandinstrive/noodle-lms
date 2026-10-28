@@ -1,10 +1,12 @@
-import { and, asc, eq, gt, inArray, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, or } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import {
   activities,
   auditLogs,
   courses,
+  gradeGrades,
+  gradeItems,
   enrolments,
   getSystemContext,
   ltiKeys,
@@ -32,7 +34,7 @@ import { cache } from "../../core/redis";
 import { ok, zDate, zId, zOk, patchSchema } from "../../core/schemas";
 import type { SessionUser } from "../../core/types";
 import { loadActivity } from "../activities/service";
-import { isEnrolled } from "../courses/service";
+import { isEnrolled, loadCourseWith } from "../courses/service";
 import { pushGrade, syncActivityGradeItem } from "../gradebook/service";
 import {
   ACTIVITY_PROGRESS,
@@ -90,6 +92,7 @@ const zTool = z.object({
   deploymentId: z.string(),
   loginUrl: z.string(),
   launchUrl: z.string(),
+  courseId: zId.nullable(),
   deepLinkingUrl: z.string().nullable(),
   jwksUrl: z.string(),
   redirectUris: z.array(z.string()),
@@ -107,6 +110,8 @@ const zToolInput = z.object({
   launchUrl: zUrl,
   /** Deep Linking (content selection) endpoint, when it differs from the launch URL. */
   deepLinkingUrl: zUrl.nullable().optional(),
+  /** Registers the tool for this course only (teachers with lti:manage_course_tools). */
+  courseId: zId.nullable().optional(),
   jwksUrl: zUrl,
   redirectUris: z.array(zUrl).max(20).default([]),
   scopes: z.array(z.string().max(200)).max(10).default(SUPPORTED_SCOPES),
@@ -149,6 +154,24 @@ async function systemContextId(tx: DB, req: FastifyRequest) {
 async function requireToolAdmin(tx: DB, req: FastifyRequest) {
   requireUser(req);
   await requireCapability(tx, req, "lti:manage_tools", await systemContextId(tx, req));
+}
+
+/** Organization tools need lti:manage_tools; a course's own tools need lti:manage_course_tools in that course. */
+async function requireToolManager(tx: DB, req: FastifyRequest, courseId: string | null | undefined) {
+  if (!courseId) return requireToolAdmin(tx, req);
+  await loadCourseWith(tx, req, courseId, "lti:manage_course_tools");
+}
+
+/** Loads a tool the caller may manage (missing and forbidden both look like 404). */
+async function manageableTool(tx: DB, req: FastifyRequest, id: string) {
+  const tool = must(await toolById(tx, id), "Tool");
+  try {
+    await requireToolManager(tx, req, tool.courseId);
+  } catch (err) {
+    if (err instanceof AppError && err.statusCode === 403) throw notFound("Tool");
+    throw err;
+  }
+  return tool;
 }
 
 async function validateToolUrls(t: { loginUrl?: string; launchUrl?: string; deepLinkingUrl?: string | null; jwksUrl?: string; redirectUris?: string[] }) {
@@ -269,11 +292,23 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
   app.get(
     "/tools",
-    { schema: { tags: ["LTI"], summary: "Registered external tools (lti:manage_tools)", response: { 200: z.array(zTool) } } },
+    {
+      schema: {
+        tags: ["LTI"],
+        summary: "Registered external tools: the organization's, or one course's (?courseId)",
+        querystring: z.object({ courseId: zId.optional() }),
+        response: { 200: z.array(zTool) },
+      },
+    },
     (req) =>
       req.tenant(async (tx) => {
-        await requireToolAdmin(tx, req);
-        return tx.select().from(ltiTools).orderBy(asc(ltiTools.name));
+        const courseId = req.query.courseId;
+        await requireToolManager(tx, req, courseId);
+        return tx
+          .select()
+          .from(ltiTools)
+          .where(courseId ? eq(ltiTools.courseId, courseId) : isNull(ltiTools.courseId))
+          .orderBy(asc(ltiTools.name));
       }),
   );
 
@@ -282,17 +317,20 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     {
       schema: {
         tags: ["LTI"],
-        summary: "Enabled tools that teachers can add to a course",
-        response: { 200: z.array(z.object({ id: zId, name: z.string(), description: z.string().nullable() })) },
+        summary: "Enabled tools that teachers can add to a course (organization tools, plus the course's own with ?courseId)",
+        querystring: z.object({ courseId: zId.optional() }),
+        response: { 200: z.array(z.object({ id: zId, name: z.string(), description: z.string().nullable(), courseId: zId.nullable() })) },
       },
     },
     (req) =>
       req.tenant(async (tx) => {
         requireUser(req);
+        const courseId = req.query.courseId;
+        if (courseId) await loadCourseWith(tx, req, courseId, "activity:create");
         return tx
-          .select({ id: ltiTools.id, name: ltiTools.name, description: ltiTools.description })
+          .select({ id: ltiTools.id, name: ltiTools.name, description: ltiTools.description, courseId: ltiTools.courseId })
           .from(ltiTools)
-          .where(eq(ltiTools.enabled, true))
+          .where(and(eq(ltiTools.enabled, true), courseId ? or(isNull(ltiTools.courseId), eq(ltiTools.courseId, courseId)) : isNull(ltiTools.courseId)))
           .orderBy(asc(ltiTools.name));
       }),
   );
@@ -304,14 +342,15 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     },
     async (req, reply) => {
       const out = await req.tenant(async (tx) => {
-        await requireToolAdmin(tx, req);
         const b = req.body;
+        await requireToolManager(tx, req, b.courseId);
         const redirectUris = b.redirectUris.length ? b.redirectUris : [b.launchUrl];
         await validateToolUrls({ ...b, redirectUris });
         const [tool] = await tx
           .insert(ltiTools)
           .values({
             organizationId: req.org.id,
+            courseId: b.courseId ?? null,
             name: b.name,
             description: b.description ?? null,
             clientId: newClientId(),
@@ -340,9 +379,9 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     },
     (req) =>
       req.tenant(async (tx) => {
-        await requireToolAdmin(tx, req);
-        const tool = must(await toolById(tx, req.params.id), "Tool");
+        const tool = await manageableTool(tx, req, req.params.id);
         const b = req.body;
+        if (b.courseId !== undefined && (b.courseId ?? null) !== tool.courseId) throw badRequest("A tool can't be moved between courses");
         await validateToolUrls(b);
         const patch: Partial<typeof ltiTools.$inferInsert> = { updatedAt: new Date() };
         if (b.name !== undefined) patch.name = b.name;
@@ -366,8 +405,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     { schema: { tags: ["LTI"], summary: "Delete an unused LTI tool", params: z.object({ id: zId }), response: { 200: zOk } } },
     (req) =>
       req.tenant(async (tx) => {
-        await requireToolAdmin(tx, req);
-        const tool = must(await toolById(tx, req.params.id), "Tool");
+        const tool = await manageableTool(tx, req, req.params.id);
         const used = await tx.select({ id: ltiLinks.id }).from(ltiLinks).where(eq(ltiLinks.toolId, tool.id)).limit(1);
         if (used.length) throw conflict("This tool is used by activities. Disable it instead.");
         await tx.delete(ltiTools).where(eq(ltiTools.id, tool.id));
@@ -388,8 +426,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     },
     (req) =>
       req.tenant(async (tx) => {
-        await requireToolAdmin(tx, req);
-        const tool = must(await toolById(tx, req.params.id), "Tool");
+        const tool = await manageableTool(tx, req, req.params.id);
         const { urls } = await orgInfo(tx, req.org.id);
         return {
           issuer: urls.issuer,
@@ -914,6 +951,50 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
       const token = serviceToken(req, [SCOPES.lineItem]);
       const item = await saveLineItem(token, req.params.activityId, req.body, "update");
       return reply.type(MEDIA.lineItem).send(item);
+    },
+  );
+
+  app.get(
+    "/ags/:activityId/lineitem/results",
+    {
+      config: { tenant: false, rateLimit: { max: 120, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["LTI"],
+        summary: "AGS result service: current gradebook results for the line item",
+        params: z.object({ activityId: zId }),
+        querystring: z.object({ user_id: z.string().max(200).optional(), limit: z.coerce.number().int().min(1).max(1000).default(1000) }),
+        response: {
+          200: z.array(
+            z.object({ id: z.string(), scoreOf: z.string(), userId: z.string(), resultScore: z.number().optional(), resultMaximum: z.number(), comment: z.string().optional() }),
+          ),
+        },
+      },
+    },
+    async (req, reply) => {
+      const token = serviceToken(req, [SCOPES.result]);
+      const results = await withTenant(token.o, async (tx) => {
+        const row = await serviceLink(tx, token, req.params.activityId);
+        if (row.link.gradeMax === null) throw notFound("Line item");
+        const { urls } = await orgInfo(tx, token.o);
+        const lineItem = urls.lineItemUrl(row.activity.id);
+        const userFilter = req.query.user_id && /^[0-9a-f-]{36}$/i.test(req.query.user_id) ? eq(gradeGrades.userId, req.query.user_id) : undefined;
+        if (req.query.user_id && !userFilter) return [];
+        const grades = await tx
+          .select({ userId: gradeGrades.userId, finalGrade: gradeGrades.finalGrade, gradeMax: gradeItems.gradeMax, feedback: gradeGrades.feedback })
+          .from(gradeGrades)
+          .innerJoin(gradeItems, eq(gradeItems.id, gradeGrades.itemId))
+          .where(and(eq(gradeItems.activityId, row.activity.id), userFilter))
+          .limit(req.query.limit);
+        return grades.map((g) => ({
+          id: `${lineItem}/results/${g.userId}`,
+          scoreOf: lineItem,
+          userId: g.userId,
+          ...(g.finalGrade !== null ? { resultScore: g.finalGrade } : {}),
+          resultMaximum: g.gradeMax,
+          ...(g.feedback ? { comment: g.feedback.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 10_000) } : {}),
+        }));
+      });
+      return reply.type(MEDIA.resultContainer).send(results);
     },
   );
 

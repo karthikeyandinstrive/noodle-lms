@@ -25,15 +25,13 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 - [ ] Native-speaker review of the Spanish translations (2,200+ keys).
 - [ ] Tracing (OpenTelemetry) and log shipping, once a collector/vendor is chosen. Metrics (`/metrics`) and readiness (`/ready`) are done.
 - [ ] **Run the load tests** in `loadtest/` against real PostgreSQL (needs k6) and tune from the results. The scripts and seed are verified against the API; k6 itself hasn't been run.
-- [ ] **Decide: plan limits when self-hosted.** `assertWithinLimits` applies the Free plan (50 users, 5 courses) to every organization, even with `SAAS_MODE` off. Self-hosted installs probably want no limits.
 
 ## P2 — Improvements
 
-- [ ] LTI: AGS result service, multiple line items per link, course-scoped tools (teachers registering their own tools).
+- [ ] LTI: multiple line items per resource link (one per link today).
 - [ ] SCORM 2004 sequencing rules (pre/post conditions, rollup rules); SCOs can be opened in any order today.
-- [ ] Moodle `.mbz` import of question banks, files and grade setup (structure, page/url/label/assign/forum/quiz settings import today).
-- [ ] Restore quiz attempts, workshop data and attendance from backups (grades, submissions, groups and forum posts are restored).
-- [ ] Search across very large organizations: activity/forum queries filter with `IN (course ids)`; above ~60k courses this needs a join or chunking.
+- [ ] Moodle `.mbz` import of files (embedded images, attachments), grade setup, random questions and calculated/drag-and-drop question types.
+- [ ] Restore workshop submissions and assessments from backups (everything else of learners' work is restored).
 
 ## P3 — Future scope
 
@@ -69,5 +67,10 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 - [x] **LTI Deep Linking 2.0** (teacher picks content in the tool; signed response verified against the tool's JWKS, single use) and **AGS line item create/update** (`lineitem` scope)
 - [x] Search: bulk capability resolution (`prefetchCapabilities`) instead of per-course checks, with an equivalence test against `hasCapability`
 - [x] **Load-testing kit** (`loadtest/`): seed script for a large course, k6 scenarios for quiz attempts and gradebook/reports with p95 thresholds; `RATE_LIMIT_ALLOWLIST` for test runners
-- [x] **411 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
+- [x] Plan limits apply only in SaaS mode (or with `ENFORCE_PLAN_LIMITS=true`); self-hosted installs are unlimited
+- [x] Search no longer sends huge `IN (course ids)` lists for organization-wide staff
+- [x] LTI AGS **result service** (`result.readonly`) and **course-level tools** registered by teachers (`lti:manage_course_tools`, course "External tools" tab)
+- [x] Moodle `.mbz` import of the **question bank** (3.x and 4.x layouts; multichoice, true/false, short answer, numerical, essay, matching) and quiz question slots
+- [x] Backups now include and restore **finished quiz attempts** (with answers) and **attendance records**
+- [x] **417 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
 - [x] Pushed to GitHub: `karthikeyandinstrive/noodle-lms` (`main` + `feature/initial-lms`)

@@ -32,6 +32,8 @@ export const ltiTools = pgTable("lti_tools", {
   loginUrl: text().notNull(),
   /** Default target link URI (launch URL). */
   launchUrl: text().notNull(),
+  /** Set for a tool a teacher registered for one course; null for organization-wide tools. */
+  courseId: uuid().references(() => courses.id, { onDelete: "cascade" }),
   /** Where Deep Linking requests go (content selection); the launch URL when empty. */
   deepLinkingUrl: text(),
   /** Tool's JWKS URL (for verifying its service-token assertions and deep linking responses). */

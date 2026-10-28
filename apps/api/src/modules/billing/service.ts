@@ -5,7 +5,7 @@ import { config } from "../../config";
 import { AppError, badRequest } from "../../core/errors";
 import { logger } from "../../core/logger";
 import { auditSystem } from "../payments/service";
-import { PLANS, exceedsLimit, planForSubscriptionStatus, planLimits, type LimitKind, type PlanId } from "./plans";
+import { PLANS, exceedsLimit, limitsEnforced, planForSubscriptionStatus, planLimits, type LimitKind, type PlanId } from "./plans";
 
 export { PLANS, planLimits, type LimitKind, type PlanId } from "./plans";
 
@@ -48,6 +48,7 @@ export async function usage(tx: DB, organizationId: string): Promise<Record<Limi
  * `await assertWithinLimits(tx, req.org.id, "users", rows.length)`.
  */
 export async function assertWithinLimits(tx: DB, organizationId: string, kind: LimitKind, adding = 1) {
+  if (!limitsEnforced(config)) return;
   const [org] = await tx.select({ plan: organizations.plan }).from(organizations).where(eq(organizations.id, organizationId)).limit(1);
   const plan = org?.plan ?? "free";
   const limit = planLimits(plan)[kind];

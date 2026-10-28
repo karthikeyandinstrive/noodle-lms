@@ -5,6 +5,8 @@ import {
   assignments,
   assignmentSubmissions,
   attendances,
+  attemptAnswers,
+  attendanceRecords,
   attendanceSessions,
   badges,
   certificateActivities,
@@ -29,6 +31,7 @@ import {
   questionCategories,
   questions,
   questionVersions,
+  quizAttempts,
   quizSlots,
   quizzes,
   roleAssignments,
@@ -158,7 +161,7 @@ export async function buildCourseBackup(
         data = r
           ? {
               ...pick(r, TYPE_COLUMNS.quiz),
-              slots: slots.filter((s) => s.quizId === r.id).map((s) => ({ questionId: s.questionId, pinnedVersion: s.pinnedVersion, position: s.position, maxMark: s.maxMark })),
+              slots: slots.filter((s) => s.quizId === r.id).map((s) => ({ id: s.id, questionId: s.questionId, pinnedVersion: s.pinnedVersion, position: s.position, maxMark: s.maxMark })),
             }
           : null;
         break;
@@ -180,7 +183,7 @@ export async function buildCourseBackup(
               ...pick(r, TYPE_COLUMNS.attendance),
               sessions: sessions
                 .filter((s) => s.attendanceId === r.id)
-                .map((s) => ({ groupId: s.groupId, startsAt: s.startsAt, durationMinutes: s.durationMinutes, description: s.description })),
+                .map((s) => ({ id: s.id, groupId: s.groupId, startsAt: s.startsAt, durationMinutes: s.durationMinutes, description: s.description })),
             }
           : null;
         break;
@@ -353,7 +356,29 @@ export async function buildCourseBackup(
       ? await tx.select().from(forumPosts).where(inArray(forumPosts.discussionId, discussions.map((d) => d.id))).orderBy(asc(forumPosts.createdAt))
       : [];
 
-    for (const id of [...grades.map((g) => g.userId), ...subs.map((s) => s.userId), ...discussions.map((d) => d.userId), ...posts.map((p) => p.userId), ...members.map((m) => m.userId)]) {
+    // Finished quiz attempts (in-progress ones can't be resumed in another course) with their answers.
+    const activityOfQuiz = new Map([...quizRows.values()].map((q) => [q.id, q.activityId]));
+    const attempts = quizIds.length
+      ? await tx.select().from(quizAttempts).where(and(inArray(quizAttempts.quizId, quizIds), eq(quizAttempts.status, "finished")))
+      : [];
+    const answers = attempts.length
+      ? await tx
+          .select({ a: attemptAnswers, questionId: questionVersions.questionId, version: questionVersions.version })
+          .from(attemptAnswers)
+          .innerJoin(questionVersions, eq(questionVersions.id, attemptAnswers.questionVersionId))
+          .where(inArray(attemptAnswers.attemptId, attempts.map((x) => x.id)))
+      : [];
+    const records = sessions.length ? await tx.select().from(attendanceRecords).where(inArray(attendanceRecords.sessionId, sessions.map((x) => x.id))) : [];
+
+    for (const id of [
+      ...grades.map((g) => g.userId),
+      ...subs.map((s) => s.userId),
+      ...discussions.map((d) => d.userId),
+      ...posts.map((p) => p.userId),
+      ...members.map((m) => m.userId),
+      ...attempts.map((x) => x.userId),
+      ...records.map((r) => r.userId),
+    ]) {
       await addPerson(id);
     }
     for (const f of subFiles) userFileIds.add(f.fileId);
@@ -401,6 +426,32 @@ export async function buildCourseBackup(
         createdAt: p.createdAt.toISOString(),
         deleted: !!p.deletedAt,
       })),
+      quizAttempts: attempts.map((x) => ({
+        activityId: activityOfQuiz.get(x.quizId)!,
+        userId: x.userId,
+        attempt: x.attempt,
+        layout: x.layout,
+        startedAt: x.startedAt.toISOString(),
+        finishedAt: x.finishedAt?.toISOString() ?? null,
+        sumMarks: x.sumMarks,
+        grade: x.grade,
+        needsGrading: x.needsGrading,
+        answers: answers
+          .filter((r) => r.a.attemptId === x.id)
+          .map((r) => ({
+            slotId: r.a.slotId,
+            questionId: r.questionId,
+            version: r.version,
+            variant: r.a.variant,
+            response: r.a.response ?? null,
+            fraction: r.a.fraction,
+            mark: r.a.mark,
+            maxMark: r.a.maxMark,
+            needsGrading: r.a.needsGrading,
+            comment: r.a.comment,
+          })),
+      })),
+      attendanceRecords: records.map((r) => ({ sessionId: r.sessionId, userId: r.userId, status: r.status, remarks: r.remarks, takenAt: r.takenAt.toISOString() })),
     };
   }
 

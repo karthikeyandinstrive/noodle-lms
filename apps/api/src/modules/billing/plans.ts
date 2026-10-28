@@ -18,6 +18,9 @@ export function planLimits(plan: string | null | undefined): PlanLimits {
 }
 
 /** True when adding `adding` items to `current` would exceed `limit`. */
+/** Plan limits are a SaaS concern: self-hosted installs are unlimited unless ENFORCE_PLAN_LIMITS is set. */
+export const limitsEnforced = (cfg: { SAAS_MODE: boolean; ENFORCE_PLAN_LIMITS: boolean }) => cfg.SAAS_MODE || cfg.ENFORCE_PLAN_LIMITS;
+
 export function exceedsLimit(limit: number | null, current: number, adding = 1) {
   return limit !== null && current + adding > limit;
 }

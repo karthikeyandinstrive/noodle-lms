@@ -5,6 +5,8 @@ import {
   assignmentSubmissions,
   assignments,
   attendances,
+  attemptAnswers,
+  attendanceRecords,
   attendanceSessions,
   badges,
   certificateActivities,
@@ -30,6 +32,7 @@ import {
   questionCategories,
   questions,
   questionVersions,
+  quizAttempts,
   quizSlots,
   submissionFiles,
   quizzes,
@@ -92,7 +95,7 @@ const TYPE_SCHEMAS = {
     shuffleAnswers: z.boolean().default(true),
     reviewOptions: z.object({ marks: z.boolean(), correctness: z.boolean(), feedback: z.boolean(), rightAnswer: z.boolean() }).optional(),
     slots: z
-      .array(z.object({ questionId: z.string().max(100), pinnedVersion: z.number().int().nullable().optional(), position: z.number().int(), maxMark: zNum.default(1) }))
+      .array(z.object({ id: z.string().max(100).optional(), questionId: z.string().max(100), pinnedVersion: z.number().int().nullable().optional(), position: z.number().int(), maxMark: zNum.default(1) }))
       .max(1000)
       .default([]),
   }),
@@ -119,7 +122,7 @@ const TYPE_SCHEMAS = {
     statusPoints: z.object({ present: zNum, late: zNum, excused: zNum, absent: zNum }).optional(),
     allowSelfMarking: z.boolean().default(false),
     sessions: z
-      .array(z.object({ groupId: z.string().max(100).nullable().optional(), startsAt: z.preprocess((v) => new Date(v as string), z.date()), durationMinutes: z.number().int().min(0).default(60), description: zHtml }))
+      .array(z.object({ id: z.string().max(100).optional(), groupId: z.string().max(100).nullable().optional(), startsAt: z.preprocess((v) => new Date(v as string), z.date()), durationMinutes: z.number().int().min(0).default(60), description: zHtml }))
       .max(5000)
       .default([]),
   }),
@@ -420,6 +423,9 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
 
   // ─── Activities ────────────────────────────────────────────────────────────
   const activityMap = new Map<string, string>();
+  /** Backup quiz slot / attendance session id → restored id (for learners' attempts and records). */
+  const slotMap = new Map<string, string>();
+  const sessionMap = new Map<string, string>();
   const restored: ActivityRow[] = [];
   const positions = new Map<string, number>();
   const sortedActivities = [...backup.activities].sort(
@@ -518,7 +524,11 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
             warn(`Quiz "${a.name}": a question was missing from the backup and was left out`);
             continue;
           }
-          await tx.insert(quizSlots).values({ organizationId, quizId: quiz!.id, questionId, pinnedVersion: slot.pinnedVersion ?? null, position: pos++, maxMark: slot.maxMark });
+          const [row] = await tx
+            .insert(quizSlots)
+            .values({ organizationId, quizId: quiz!.id, questionId, pinnedVersion: slot.pinnedVersion ?? null, position: pos++, maxMark: slot.maxMark })
+            .returning({ id: quizSlots.id });
+          if (slot.id) slotMap.set(slot.id, row!.id);
           bump(report, "quizSlots");
         }
         break;
@@ -544,14 +554,18 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
         const { sessions, ...s } = d as z.infer<typeof TYPE_SCHEMAS.attendance>;
         const [att] = await tx.insert(attendances).values({ ...base, ...s }).returning();
         for (const sess of sessions) {
-          await tx.insert(attendanceSessions).values({
-            organizationId,
-            attendanceId: att!.id,
-            groupId: sess.groupId ? (groupMap.get(sess.groupId) ?? null) : null,
-            startsAt: sess.startsAt,
-            durationMinutes: sess.durationMinutes,
-            description: sess.description ? cleanHtml(sess.description) : null,
-          });
+          const [row] = await tx
+            .insert(attendanceSessions)
+            .values({
+              organizationId,
+              attendanceId: att!.id,
+              groupId: sess.groupId ? (groupMap.get(sess.groupId) ?? null) : null,
+              startsAt: sess.startsAt,
+              durationMinutes: sess.durationMinutes,
+              description: sess.description ? cleanHtml(sess.description) : null,
+            })
+            .returning({ id: attendanceSessions.id });
+          if (sess.id) sessionMap.set(sess.id, row!.id);
         }
         bump(report, "attendanceSessions", sessions.length);
         break;
@@ -595,8 +609,9 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
       case "lti": {
         const s = d as z.infer<typeof TYPE_SCHEMAS.lti>;
         let tool: { id: string } | undefined;
-        if (sameOrg && s.toolId) [tool] = await tx.select({ id: ltiTools.id }).from(ltiTools).where(eq(ltiTools.id, s.toolId)).limit(1);
-        if (!tool && s.toolName) [tool] = await tx.select({ id: ltiTools.id }).from(ltiTools).where(eq(ltiTools.name, s.toolName)).limit(1);
+        // Only organization-wide tools carry over: a course's own tools belong to that course.
+        if (sameOrg && s.toolId) [tool] = await tx.select({ id: ltiTools.id }).from(ltiTools).where(and(eq(ltiTools.id, s.toolId), isNull(ltiTools.courseId))).limit(1);
+        if (!tool && s.toolName) [tool] = await tx.select({ id: ltiTools.id }).from(ltiTools).where(and(eq(ltiTools.name, s.toolName), isNull(ltiTools.courseId))).limit(1);
         if (tool) {
           await tx.insert(ltiLinks).values({ ...base, toolId: tool.id, targetLinkUri: s.targetLinkUri ?? null, customParams: s.customParams, gradeMax: s.gradeMax ?? null, openInNewWindow: s.openInNewWindow });
         } else {
@@ -764,7 +779,7 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
     }
     if (skipped) warn(`${skipped} enrolment(s) were skipped: no user with that email in this organization`);
     if (input.restoreUserData) {
-      await restoreUserData(tx, { organizationId, courseId, restorer: userId, userData: backup.userData, localOf, activityMap, itemMap, groupMap, restoreFile, html, report });
+      await restoreUserData(tx, { organizationId, courseId, restorer: userId, slotMap, sessionMap, questionMap, userData: backup.userData, localOf, activityMap, itemMap, groupMap, restoreFile, html, report });
     } else if (hasUserActivity(backup.userData)) {
       report.unsupported.push("User data (grades, submissions, forum posts) was not restored: choose \"Restore user data\" to include it");
     }
@@ -789,7 +804,8 @@ async function fileExists(tx: DB, id: string) {
 
 type UserData = NonNullable<ParsedBackupCourse["userData"]>;
 
-const hasUserActivity = (d: UserData) => d.grades.length + d.submissions.length + d.forumDiscussions.length + d.groupMembers.length > 0;
+const hasUserActivity = (d: UserData) =>
+  d.grades.length + d.submissions.length + d.forumDiscussions.length + d.groupMembers.length + d.quizAttempts.length + d.attendanceRecords.length > 0;
 
 /**
  * Restores learners' work for users that exist (by email) in this organization:
@@ -803,6 +819,9 @@ async function restoreUserData(
     organizationId: string;
     courseId: string;
     restorer: string;
+    slotMap: Map<string, string>;
+    sessionMap: Map<string, string>;
+    questionMap: Map<string, string>;
     userData: UserData;
     localOf: (backupUserId: string) => string | undefined;
     activityMap: Map<string, string>;
@@ -983,6 +1002,91 @@ async function restoreUserData(
       bump(report, "forumPosts");
     }
   }
+
+  // Finished quiz attempts, with each answer pointing at the restored slot and question version.
+  const quizRows = ctx.activityMap.size ? await tx.select({ id: quizzes.id, activityId: quizzes.activityId }).from(quizzes).where(inArray(quizzes.activityId, [...ctx.activityMap.values()])) : [];
+  const quizOf = new Map(quizRows.map((q) => [q.activityId, q.id]));
+  const versionIds = new Map<string, string | null>();
+  const versionId = async (backupQuestionId: string, version: number) => {
+    const key = `${backupQuestionId}:${version}`;
+    if (!versionIds.has(key)) {
+      const questionId = ctx.questionMap.get(backupQuestionId);
+      const [row] = questionId
+        ? await tx.select({ id: questionVersions.id }).from(questionVersions).where(and(eq(questionVersions.questionId, questionId), eq(questionVersions.version, version))).limit(1)
+        : [];
+      versionIds.set(key, row?.id ?? null);
+    }
+    return versionIds.get(key)!;
+  };
+  let incompleteAttempts = 0;
+  for (const at of userData.quizAttempts) {
+    const newActivityId = ctx.activityMap.get(at.activityId);
+    const quizId = newActivityId ? quizOf.get(newActivityId) : undefined;
+    const uid = who(at.userId);
+    if (!quizId || !uid) continue;
+    const layout = at.layout.map((id) => ctx.slotMap.get(id)).filter((id): id is string => !!id);
+    const answers = [];
+    for (const a of at.answers) {
+      const slotId = ctx.slotMap.get(a.slotId);
+      const questionVersionId = slotId ? await versionId(a.questionId, a.version) : null;
+      if (!slotId || !questionVersionId) continue;
+      answers.push({ ...a, slotId, questionVersionId });
+    }
+    if (answers.length < at.answers.length || layout.length < at.layout.length) incompleteAttempts++;
+    if (!layout.length) continue;
+    const [row] = await tx
+      .insert(quizAttempts)
+      .values({
+        organizationId,
+        quizId,
+        userId: uid,
+        attempt: at.attempt,
+        status: "finished",
+        layout,
+        startedAt: toDate(at.startedAt) ?? new Date(),
+        finishedAt: toDate(at.finishedAt) ?? new Date(),
+        sumMarks: at.sumMarks,
+        grade: at.grade,
+        needsGrading: at.needsGrading,
+      })
+      .onConflictDoNothing()
+      .returning({ id: quizAttempts.id });
+    if (!row) continue;
+    for (const a of answers) {
+      await tx.insert(attemptAnswers).values({
+        organizationId,
+        attemptId: row.id,
+        slotId: a.slotId,
+        questionVersionId: a.questionVersionId,
+        variant: a.variant,
+        response: a.response ?? null,
+        fraction: a.fraction,
+        mark: a.mark,
+        maxMark: a.maxMark,
+        needsGrading: a.needsGrading,
+        comment: a.comment ? cleanHtml(a.comment) : null,
+        gradedBy: a.comment || a.needsGrading ? ctx.restorer : null,
+      });
+    }
+    bump(report, "quizAttempts");
+  }
+  if (incompleteAttempts) report.warnings.push(`${incompleteAttempts} quiz attempt(s) referred to questions that weren't restored; those answers were left out`);
+
+  // Attendance records.
+  const STATUSES = ["present", "late", "excused", "absent"] as const;
+  const taken = new Set<string>();
+  for (const r of userData.attendanceRecords) {
+    const sessionId = ctx.sessionMap.get(r.sessionId);
+    const uid = who(r.userId);
+    if (!sessionId || !uid) continue;
+    await tx
+      .insert(attendanceRecords)
+      .values({ organizationId, sessionId, userId: uid, status: oneOf(STATUSES, r.status, "present"), remarks: r.remarks, takenBy: ctx.restorer, takenAt: toDate(r.takenAt) ?? new Date() })
+      .onConflictDoNothing();
+    taken.add(sessionId);
+    bump(report, "attendanceRecords");
+  }
+  if (taken.size) await tx.update(attendanceSessions).set({ takenAt: new Date() }).where(and(inArray(attendanceSessions.id, [...taken]), isNull(attendanceSessions.takenAt)));
 
   if (skipped) report.warnings.push(`${skipped} user data record(s) were skipped: their user doesn't exist in this organization`);
 }

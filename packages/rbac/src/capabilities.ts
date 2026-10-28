@@ -123,6 +123,7 @@ export const CAPABILITIES = {
 
   // interoperability
   "lti:manage_tools": { description: "Register external LTI tools", level: "system", risky: true, defaults: ["org_admin"] },
+  "lti:manage_course_tools": { description: "Register external LTI tools for one course", level: "course", risky: true, defaults: EDITORS },
   "lti:launch": { description: "Launch external tools", level: "activity", defaults: [...GRADERS, "student"] },
   "scorm:attempt": { description: "Attempt SCORM packages", level: "activity", defaults: ["student"] },
   "scorm:view_reports": { description: "View SCORM attempts of all learners", level: "activity", defaults: GRADERS },

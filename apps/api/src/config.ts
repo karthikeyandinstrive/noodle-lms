@@ -25,6 +25,8 @@ const schema = z.object({
   DEFAULT_ORG_SLUG: z.string().default("default"),
   /** Allow public organization signup (SaaS mode). */
   SAAS_MODE: bool,
+  /** Apply plan limits (users, courses) outside SaaS mode too. Self-hosted installs are unlimited by default. */
+  ENFORCE_PLAN_LIMITS: bool,
 
   /** 32-byte key, base64. Encrypts stored secrets (storage + payment credentials). */
   ENCRYPTION_KEY: z.string().optional(),

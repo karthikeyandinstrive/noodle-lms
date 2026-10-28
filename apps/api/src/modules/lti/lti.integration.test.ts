@@ -354,4 +354,68 @@ describe("LTI Deep Linking and line item management", () => {
     expect(upd.json()).toMatchObject({ scoreMaximum: 40 });
     expect((await admin.req("GET", `/activities/${activityId}`)).body.settings.gradeMax).toBe(40);
   });
+
+  it("returns gradebook results with the result.readonly scope", async () => {
+    const signed = await new SignJWT({ jti: "jti-results" })
+      .setProtectedHeader({ alg: "RS256", kid: "tool-1" })
+      .setIssuer(tool.clientId)
+      .setSubject(tool.clientId)
+      .setAudience("http://localhost:3000/api/v1/lti/token")
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(toolKey);
+    const tokenRes = await inject("POST", "/lti/token", {
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: signed,
+        scope: "https://purl.imsglobal.org/spec/lti-ags/scope/result.readonly",
+      }).toString(),
+    });
+    expect(tokenRes.statusCode, tokenRes.body).toBe(200);
+    const headers = { authorization: `Bearer ${tokenRes.json().access_token}` };
+    const res = await inject("GET", `/lti/ags/${activityId}/lineitem/results?user_id=${studentId}`, { headers });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.headers["content-type"]).toContain("application/vnd.ims.lis.v2.resultcontainer+json");
+    const [result] = res.json();
+    expect(result).toMatchObject({ userId: studentId, scoreOf: `http://localhost:3000/api/v1/lti/ags/${activityId}/lineitem`, resultMaximum: 40 });
+    expect(typeof result.resultScore).toBe("number");
+    // The score token can't read results.
+    expect((await inject("GET", `/lti/ags/${activityId}/lineitem/results`)).statusCode).toBe(401);
+  });
+});
+
+describe("course-level tools", () => {
+  it("lets a course's teachers register tools that only that course can use", async () => {
+    const created = await admin.req("POST", "/users", { email: "lti-teacher@default.test", firstName: "Tess", lastName: "Teacher", password: h.PASSWORD });
+    expect((await admin.req("POST", `/courses/${courseId}/enrolments`, { userIds: [created.body.id], role: "editing_teacher" })).status).toBe(200);
+    const teacher = new h.Client(env.app);
+    expect((await teacher.login("lti-teacher@default.test")).status).toBe(200);
+
+    const body = { name: "Course tool", loginUrl: `${toolBase}/login`, launchUrl: `${toolBase}/launch`, jwksUrl: `${toolBase}/jwks`, courseId };
+    // Students can't, and teachers can't register organization-wide tools.
+    expect((await student.req("POST", "/lti/tools", body)).status).toBe(403);
+    expect((await teacher.req("POST", "/lti/tools", { ...body, courseId: undefined })).status).toBe(403);
+    const res = await teacher.req("POST", "/lti/tools", body);
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.courseId).toBe(courseId);
+    const courseTool = res.body.id as string;
+
+    expect((await teacher.req("GET", `/lti/tools?courseId=${courseId}`)).body.map((x: { id: string }) => x.id)).toEqual([courseTool]);
+    expect((await admin.req("GET", "/lti/tools")).body.map((x: { id: string }) => x.id)).not.toContain(courseTool);
+    expect((await teacher.req("GET", `/lti/tools/available?courseId=${courseId}`)).body.map((x: { id: string }) => x.id)).toContain(courseTool);
+    expect((await teacher.req("GET", `/lti/tools/${courseTool}/config`)).status).toBe(200);
+
+    const sectionId = (await admin.req("GET", `/courses/${courseId}`)).body.sections[0].id;
+    expect((await teacher.req("POST", `/courses/${courseId}/activities`, { type: "lti", sectionId, name: "Course tool link", settings: { toolId: courseTool } })).status).toBe(201);
+
+    // Another course can't see or use it.
+    const other = await admin.req("POST", "/courses", { fullname: "Other", shortname: "OTH" });
+    const otherSection = (await admin.req("GET", `/courses/${other.body.id}`)).body.sections[0].id;
+    expect((await admin.req("GET", `/lti/tools/available?courseId=${other.body.id}`)).body.map((x: { id: string }) => x.id)).not.toContain(courseTool);
+    expect((await admin.req("POST", `/courses/${other.body.id}/activities`, { type: "lti", sectionId: otherSection, name: "x", settings: { toolId: courseTool } })).status).toBe(400);
+    // Nor can someone without the capability in that course manage it.
+    expect((await student.req("PATCH", `/lti/tools/${courseTool}`, { enabled: false })).status).toBe(404);
+  });
 });

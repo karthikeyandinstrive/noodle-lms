@@ -135,6 +135,7 @@ const courseCaps = [
   "notification:send",
   "course:backup",
   "message:send",
+  "lti:manage_course_tools",
 ] as const;
 
 function toCourse(c: typeof courses.$inferSelect) {

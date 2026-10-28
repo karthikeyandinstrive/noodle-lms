@@ -1,0 +1,2 @@
+ALTER TABLE "lti_tools" ADD COLUMN "course_id" uuid;--> statement-breakpoint
+ALTER TABLE "lti_tools" ADD CONSTRAINT "lti_tools_course_id_courses_id_fk" FOREIGN KEY ("course_id") REFERENCES "public"."courses"("id") ON DELETE cascade ON UPDATE no action;

@@ -1,4 +1,5 @@
 import type { ArchiveFiles } from "./archive";
+import { moodleQuizSlots, parseMoodleQuestions } from "./mbz-questions";
 import { zBackupCourse, type ParsedBackupCourse, type RestoreReport } from "./format";
 import { child, children, numberOf, parseXml, path, textOf, type XmlNode } from "./xml";
 
@@ -7,7 +8,7 @@ import { child, children, numberOf, parseXml, path, textOf, type XmlNode } from 
  * so the regular restore engine creates the course.
  *
  * Supported: course settings, sections, page, url, label (as page), assign,
- * forum and quiz (settings only — the question bank is not imported).
+ * forum, quiz (settings and question slots) and the question bank (see mbz-questions.ts).
  * Everything else is reported as unsupported.
  */
 
@@ -23,6 +24,7 @@ export function mbzFilter(name: string) {
   return (
     name === "moodle_backup.xml" ||
     name === "course/course.xml" ||
+    name === "questions.xml" ||
     /^sections\/[^/]+\/section\.xml$/.test(name) ||
     /^activities\/[^/]+\/(module|page|url|label|assign|forum|quiz)\.xml$/.test(name)
   );
@@ -74,6 +76,7 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
   const shortname = textOf(courseXml, "shortname") ?? textOf(info, "original_course_shortname") ?? "imported";
   const format = textOf(courseXml, "format");
 
+  const bank = parseMoodleQuestions(xmlFile(files, "questions.xml"), report);
   const contents = child(info, "contents");
   const sectionEntries = children(child(contents, "sections"), "section");
   const activityEntries = children(child(contents, "activities"), "activity");
@@ -201,16 +204,15 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
             gradeMethod: methods[numberOf(mod, "grademethod") ?? 1] ?? "highest",
             gradeMax: (numberOf(mod, "grade") ?? 10) > 0 ? numberOf(mod, "grade")! : 10,
             shuffleAnswers: bool(numberOf(mod, "shuffleanswers")),
-            slots: [],
+            slots: moodleQuizSlots(mod, bank, report, name),
           },
         });
-        report.warnings.push(`Quiz "${name}" was imported without questions: add them from the question bank`);
         break;
       }
     }
   }
   for (const [mod, n] of unsupportedCounts) report.unsupported.push(`${n} Moodle "${mod}" activit${n === 1 ? "y" : "ies"}`);
-  report.unsupported.push("Moodle question banks, user data, files, grade setup and restrictions are not imported");
+  report.unsupported.push("Moodle user data, files, grade setup and restrictions are not imported");
 
   return zBackupCourse.parse({
     course: {
@@ -224,5 +226,6 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
     },
     sections,
     activities: acts,
+    questionBank: { categories: bank.categories, questions: bank.questions },
   });
 }

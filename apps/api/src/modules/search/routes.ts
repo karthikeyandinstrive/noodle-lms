@@ -45,6 +45,14 @@ type Hit = z.infer<typeof zHit>;
 
 type Ctx = { tx: DB; req: FastifyRequest; q: string; systemId: string };
 
+/**
+ * Past this many viewable courses the content queries don't list course ids (bind-parameter
+ * limits, huge plans): they search everything and drop rows from other courses afterwards.
+ * Only staff with organization-wide access get here, so nearly every course is viewable anyway.
+ */
+const MAX_COURSE_FILTER = 1000;
+const inCourses = (viewable: Map<string, unknown>) => (viewable.size > MAX_COURSE_FILTER ? undefined : inArray(activities.courseId, [...viewable.keys()]));
+
 /** Courses whose content the user may view (course:view in the course context). */
 async function viewableCourses(c: Ctx) {
   const me = requireUser(c.req);
@@ -100,13 +108,14 @@ async function searchActivities(c: Ctx, viewable: Awaited<ReturnType<typeof view
     .select({ activity: activities, sectionVisible: courseSections.visible })
     .from(activities)
     .innerJoin(courseSections, eq(courseSections.id, activities.sectionId))
-    .where(and(inArray(activities.courseId, [...byId.keys()]), textMatch(c.q, title, body)))
+    .where(and(inCourses(byId), textMatch(c.q, title, body)))
     .orderBy(desc(rank(c.q, [...title, ...body])), activities.name)
     .limit(CANDIDATES);
   await prefetchCapabilities(c.tx, c.req, ["course:view"], rows.map((r) => r.activity.contextId));
   const hits: Hit[] = [];
   for (const { activity: a, sectionVisible } of rows) {
-    const v = byId.get(a.courseId)!;
+    const v = byId.get(a.courseId);
+    if (!v) continue;
     if ((!a.visible || !sectionVisible) && !v.seeHidden) continue;
     // Activity-level overrides can remove access.
     if (!(await hasCapability(c.tx, c.req, "course:view", a.contextId))) continue;
@@ -135,7 +144,7 @@ async function searchForums(c: Ctx, viewable: Awaited<ReturnType<typeof viewable
     .innerJoin(forums, eq(forums.id, forumDiscussions.forumId))
     .innerJoin(activities, eq(activities.id, forums.activityId))
     .innerJoin(courseSections, eq(courseSections.id, activities.sectionId))
-    .where(and(inArray(activities.courseId, [...byId.keys()]), isNull(forumPosts.deletedAt), textMatch(c.q, title, body)))
+    .where(and(inCourses(byId), isNull(forumPosts.deletedAt), textMatch(c.q, title, body)))
     .orderBy(desc(rank(c.q, [...title, ...body])), desc(forumPosts.createdAt))
     .limit(CANDIDATES * 2);
 
@@ -147,7 +156,8 @@ async function searchForums(c: Ctx, viewable: Awaited<ReturnType<typeof viewable
   const hits: Hit[] = [];
   for (const r of rows) {
     if (seen.has(r.discussion.id)) continue;
-    const v = byId.get(r.activity.courseId)!;
+    const v = byId.get(r.activity.courseId);
+    if (!v) continue;
     if ((!r.activity.visible || !r.sectionVisible) && !v.seeHidden) continue;
     let acc = access.get(r.activity.id);
     if (!acc) {

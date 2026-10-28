@@ -25,6 +25,7 @@ export default function CourseLayout({ children }: { children: React.ReactNode }
     { href: `${base}/badges`, label: t("course.tab.badges", "Badges"), show: course.can("course:view") },
     { href: `${base}/permissions`, label: t("course.tab.permissions", "Permissions"), show: course.can("role:assign") },
     { href: `${base}/backup`, label: t("course.tab.backup", "Backup"), show: course.can("course:backup") },
+    { href: `${base}/external-tools`, label: t("course.tab.externalTools", "External tools"), show: course.can("lti:manage_course_tools") },
     { href: `${base}/settings`, label: t("course.tab.settings", "Settings"), show: course.can("course:update") },
   ].filter((tab) => tab.show);
 

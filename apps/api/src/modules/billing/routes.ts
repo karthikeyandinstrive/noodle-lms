@@ -11,7 +11,7 @@ import { requireCapability } from "../../core/rbac";
 import { zNullableDate } from "../../core/schemas";
 import { claimWebhookEvent, webhookScope } from "../payments/lib";
 import { appBaseUrl, providerError } from "../payments/service";
-import { PLANS, planLimits } from "./plans";
+import { PLANS, limitsEnforced, planLimits } from "./plans";
 import { applySubscription, isBillingConfigured, organizationForSubscription, platformStripe, requireBillingConfigured, usage } from "./service";
 
 const zLimits = z.object({ users: z.number().int().nullable(), courses: z.number().int().nullable() });
@@ -83,7 +83,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         return {
           configured: isBillingConfigured(),
           plan,
-          limits: planLimits(plan),
+          limits: limitsEnforced(config) ? planLimits(plan) : { users: null, courses: null },
           usage: await usage(tx, req.org.id),
           subscription: sub
             ? { plan: sub.plan, status: sub.status, currentPeriodEnd: sub.currentPeriodEnd, cancelAtPeriodEnd: sub.cancelAtPeriodEnd, hasBillingAccount: !!sub.stripeCustomerId }

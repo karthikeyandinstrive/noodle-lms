@@ -112,6 +112,31 @@ export type BackupCourse = {
     }[];
     forumDiscussions: { id: string; activityId: string; userId: string; groupId: string | null; title: string; pinned: boolean; locked: boolean; createdAt: string }[];
     forumPosts: { id: string; discussionId: string; parentId: string | null; userId: string; message: string; createdAt: string; deleted: boolean }[];
+    quizAttempts: {
+      activityId: string;
+      userId: string;
+      attempt: number;
+      /** Slot ids (from the quiz's backup slots) in the order the learner saw them. */
+      layout: string[];
+      startedAt: string;
+      finishedAt: string | null;
+      sumMarks: number | null;
+      grade: number | null;
+      needsGrading: boolean;
+      answers: {
+        slotId: string;
+        questionId: string;
+        version: number;
+        variant: Record<string, unknown>;
+        response: unknown;
+        fraction: number | null;
+        mark: number | null;
+        maxMark: number;
+        needsGrading: boolean;
+        comment: string | null;
+      }[];
+    }[];
+    attendanceRecords: { sessionId: string; userId: string; status: string; remarks: string | null; takenAt: string }[];
   };
 };
 
@@ -306,6 +331,42 @@ export const zBackupCourse = z.object({
             deleted: z.boolean().default(false),
           }),
         )
+        .max(2_000_000)
+        .default([]),
+      quizAttempts: z
+        .array(
+          z.object({
+            activityId: zIdish,
+            userId: zIdish,
+            attempt: z.number().int().min(1).max(10_000),
+            layout: z.array(zIdish).max(1000),
+            startedAt: z.string().max(100),
+            finishedAt: zNullStr.default(null),
+            sumMarks: z.number().nullable().default(null),
+            grade: z.number().nullable().default(null),
+            needsGrading: z.boolean().default(false),
+            answers: z
+              .array(
+                z.object({
+                  slotId: zIdish,
+                  questionId: zIdish,
+                  version: z.number().int().min(1),
+                  variant: z.record(z.string(), z.unknown()).default({}),
+                  response: z.unknown().optional(),
+                  fraction: z.number().nullable().default(null),
+                  mark: z.number().nullable().default(null),
+                  maxMark: z.number().min(0),
+                  needsGrading: z.boolean().default(false),
+                  comment: zNullStr.default(null),
+                }),
+              )
+              .max(1000),
+          }),
+        )
+        .max(500_000)
+        .default([]),
+      attendanceRecords: z
+        .array(z.object({ sessionId: zIdish, userId: zIdish, status: z.string().max(20), remarks: zNullStr.default(null), takenAt: z.string().max(100) }))
         .max(2_000_000)
         .default([]),
     })
