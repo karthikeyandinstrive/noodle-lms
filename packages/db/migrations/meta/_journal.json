@@ -43,6 +43,13 @@
       "when": 1793205308311,
       "tag": "0005_lti_course_tools",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793206157931,
+      "tag": "0006_lti_line_items",
+      "breakpoints": true
     }
   ]
 }

@@ -24,7 +24,7 @@ let toolBase: string;
 
 const hidden = (html: string, name: string) => new RegExp(`name="${name}" value="([^"]*)"`).exec(html)?.[1]?.replace(/&amp;/g, "&");
 
-async function inject(method: "GET" | "POST", url: string, opts: { cookie?: string; headers?: Record<string, string>; payload?: string } = {}) {
+async function inject(method: "GET" | "POST" | "PUT" | "DELETE", url: string, opts: { cookie?: string; headers?: Record<string, string>; payload?: string } = {}) {
   return env.app.inject({
     method,
     url: `/api/v1${url}`,
@@ -347,12 +347,58 @@ describe("LTI Deep Linking and line item management", () => {
     });
     expect(tokenRes.statusCode).toBe(200);
     const auth = { authorization: `Bearer ${tokenRes.json().access_token}`, "content-type": "application/vnd.ims.lis.v2.lineitem+json" };
-    const put = await inject("POST", `/lti/ags/${activityId}/lineitems`, { headers: auth, payload: JSON.stringify({ scoreMaximum: 40, label: "Quiz" }) });
-    expect(put.statusCode).toBe(409); // one line item per link, already created
     const upd = await env.app.inject({ method: "PUT", url: `/api/v1/lti/ags/${activityId}/lineitem`, headers: { host: "localhost", ...auth }, payload: JSON.stringify({ scoreMaximum: 40, label: "Quiz" }) });
     expect(upd.statusCode, upd.body).toBe(200);
     expect(upd.json()).toMatchObject({ scoreMaximum: 40 });
     expect((await admin.req("GET", `/activities/${activityId}`)).body.settings.gradeMax).toBe(40);
+  });
+
+  it("creates extra line items as gradebook columns and scores them separately", async () => {
+    const assertionFor = (jti: string) =>
+      new SignJWT({ jti })
+        .setProtectedHeader({ alg: "RS256", kid: "tool-1" })
+        .setIssuer(tool.clientId)
+        .setSubject(tool.clientId)
+        .setAudience("http://localhost:3000/api/v1/lti/token")
+        .setIssuedAt()
+        .setExpirationTime("5m")
+        .sign(toolKey);
+    const tokenRes = await inject("POST", "/lti/token", {
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: await assertionFor("jti-extra"),
+        scope: "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem https://purl.imsglobal.org/spec/lti-ags/scope/score https://purl.imsglobal.org/spec/lti-ags/scope/result.readonly",
+      }).toString(),
+    });
+    const bearer = { authorization: `Bearer ${tokenRes.json().access_token}` };
+    const json = { ...bearer, "content-type": "application/vnd.ims.lis.v2.lineitem+json" };
+
+    const created = await inject("POST", `/lti/ags/${activityId}/lineitems`, { headers: json, payload: JSON.stringify({ scoreMaximum: 5, label: "Chapter 1 checkpoint", tag: "checkpoint" }) });
+    expect(created.statusCode, created.body).toBe(201);
+    const extra = created.json();
+    expect(extra).toMatchObject({ scoreMaximum: 5, label: "Chapter 1 checkpoint", tag: "checkpoint", resourceLinkId: activityId });
+    const path = new URL(extra.id).pathname.replace("/api/v1", "");
+
+    const container = await inject("GET", `/lti/ags/${activityId}/lineitems`, { headers: bearer });
+    expect(container.json().map((i: { label: string }) => i.label)).toEqual(expect.arrayContaining(["Chapter 1 checkpoint"]));
+    expect((await inject("GET", `/lti/ags/${activityId}/lineitems?tag=checkpoint`, { headers: bearer })).json()).toHaveLength(1);
+
+    const score = await inject("POST", `${path}/scores`, {
+      headers: { ...bearer, "content-type": "application/vnd.ims.lis.v1.score+json" },
+      payload: JSON.stringify({ userId: studentId, scoreGiven: 3, scoreMaximum: 5, activityProgress: "Completed", gradingProgress: "FullyGraded", timestamp: new Date().toISOString() }),
+    });
+    expect(score.statusCode, score.body).toBe(204);
+    const results = await inject("GET", `${path}/results?user_id=${studentId}`, { headers: bearer });
+    expect(results.json()[0]).toMatchObject({ resultScore: 3, resultMaximum: 5 });
+
+    // It's a separate column in the course gradebook.
+    const grader = await admin.req("GET", `/grades/courses/${courseId}`);
+    expect(JSON.stringify(grader.body)).toContain("Chapter 1 checkpoint");
+
+    expect((await inject("DELETE", path, { headers: bearer })).statusCode).toBe(204);
+    expect((await inject("GET", path, { headers: bearer })).statusCode).toBe(404);
   });
 
   it("returns gradebook results with the result.readonly scope", async () => {

@@ -16,6 +16,26 @@ function rows<T>(result: unknown): T[] {
 }
 
 /**
+ * Fails the migration with instructions instead of letting every request fail later with
+ * "permission denied to set role".
+ */
+async function assertCanSetAppRole(db: DB) {
+  const [row] = rows<{ ok: boolean; who: string }>(
+    await db.execute(
+      sql.raw(`select current_user as who,
+         (select rolsuper from pg_roles where rolname = current_user)
+         or pg_has_role(current_user, '${APP_ROLE}', case when current_setting('server_version_num')::int >= 160000 then 'SET' else 'MEMBER' end) as ok`),
+    ),
+  );
+  if (!row?.ok) {
+    throw new Error(
+      `The database user "${row?.who}" can't switch to the "${APP_ROLE}" role that enforces tenant isolation. ` +
+        `As a superuser or the role's admin, run: GRANT ${APP_ROLE} TO "${row?.who}" WITH INHERIT FALSE, SET TRUE; (PostgreSQL 15 and older: GRANT ${APP_ROLE} TO "${row?.who}";)`,
+    );
+  }
+}
+
+/**
  * Idempotently (re)creates the application role and a tenant-isolation policy
  * on every table that has an organization_id column. Run after migrations.
  */
@@ -29,9 +49,20 @@ export async function applyRowLevelSecurity(db: DB) {
     `grant usage on schema public to ${APP_ROLE}`,
     `grant select, insert, update, delete on all tables in schema public to ${APP_ROLE}`,
     `grant usage, select on all sequences in schema public to ${APP_ROLE}`,
-    // Allow the connecting (owner) user to switch into the app role.
-    `do $$ begin execute format('grant ${APP_ROLE} to %I', current_user); exception when others then null; end $$`,
+    // Allow the connecting (owner) user to switch into the app role (`set local role` per request).
+    // PostgreSQL 16+: a CREATEROLE user who created the role is an implicit member *without* the SET
+    // option, so ask for it explicitly; older versions don't know `with set`. Superusers need nothing.
+    `do $$ begin
+       if exists (select 1 from pg_roles where rolname = current_user and rolsuper) then return; end if;
+       if current_setting('server_version_num')::int >= 160000 then
+         execute format('grant ${APP_ROLE} to %I with inherit false, set true', current_user);
+       else
+         execute format('grant ${APP_ROLE} to %I', current_user);
+       end if;
+     exception when insufficient_privilege then null; -- checked (with a clear error) below
+     end $$`,
   ]);
+  await assertCanSetAppRole(db);
 
   const tables = rows<{ table_name: string }>(
     await db.execute(sql`

@@ -22,7 +22,9 @@
     "db:seed": "npm run seed -w @lms/db",
     "db:reset": "npm run reset -w @lms/db",
     "openapi:export": "npm run openapi:export -w @lms/api",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "secrets": "node scripts/generate-secrets.mjs",
+    "test:postgres": "sh scripts/test-postgres.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

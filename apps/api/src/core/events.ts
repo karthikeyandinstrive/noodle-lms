@@ -120,7 +120,9 @@ async function lease(id: string) {
   const [row] = await db
     .update(eventOutbox)
     .set({ nextAttemptAt: new Date(Date.now() + LEASE_MS) })
-    .where(and(eq(eventOutbox.id, id), isNull(eventOutbox.dispatchedAt), lte(eventOutbox.nextAttemptAt, new Date())))
+    // Compare with the database clock: `next_attempt_at` defaults to the inserting transaction's
+    // now() (microseconds), which a JS Date (milliseconds) taken right after can still precede.
+    .where(and(eq(eventOutbox.id, id), isNull(eventOutbox.dispatchedAt), lte(eventOutbox.nextAttemptAt, sql`now()`)))
     .returning();
   return row;
 }

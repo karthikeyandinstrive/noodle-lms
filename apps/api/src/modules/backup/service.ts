@@ -8,7 +8,7 @@ import { hasCapability } from "../../core/rbac";
 import { ArchiveError, readArchive } from "./archive";
 import { buildCourseBackup } from "./export";
 import { BACKUP_FORMAT, BACKUP_VERSION, MAX_ARCHIVE_BYTES, MAX_COURSE_JSON_BYTES, zBackupCourse, zManifest, type RestoreReport } from "./format";
-import { isMoodleBackup, mbzFilter, parseMoodleBackup } from "./mbz";
+import { isMoodleBackup, mbzEmbeddedFilePaths, mbzFilter, parseMoodleBackup } from "./mbz";
 import { restoreCourse } from "./restore";
 import { XmlError } from "./xml";
 
@@ -158,7 +158,10 @@ async function loadArchive(tx: DB, tenantId: string, fileId: string, report: Res
   if (head.has("moodle_backup.xml")) {
     const archive = readArchive(body, undefined, mbzFilter);
     if (!isMoodleBackup(archive)) throw new BackupError("moodle_backup.xml is missing");
-    return { backup: parseMoodleBackup(archive, report), archive: new Map<string, Buffer>(), sourceOrganizationId: null };
+    // Second pass: only the bodies of files embedded in the HTML we import.
+    const wanted = mbzEmbeddedFilePaths(archive);
+    if (wanted.size) for (const [name, buf] of readArchive(body, undefined, (n) => wanted.has(n))) archive.set(name, buf);
+    return { backup: parseMoodleBackup(archive, report), archive, sourceOrganizationId: null };
   }
   throw new BackupError("This archive is neither an LMS backup nor a Moodle backup (.mbz)");
 }

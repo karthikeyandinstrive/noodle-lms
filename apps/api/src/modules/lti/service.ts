@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { createRemoteJWKSet, customFetch, decodeJwt, errors as joseErrors, jwtVerify, type JWTPayload } from "jose";
-import { gradeItems, ltiLinks, ltiTools, organizations, systemDb, type DB } from "@lms/db";
+import { gradeItems, ltiLineItems, ltiLinks, ltiTools, organizations, systemDb, type DB } from "@lms/db";
 import { z } from "zod";
 import { config } from "../../config";
 import { registerActivityType, type ActivityRow } from "../../core/activity-types";
@@ -172,6 +172,11 @@ export function setupLtiActivity() {
       if (Object.keys(patch).length) await tx.update(ltiLinks).set(patch).where(eq(ltiLinks.id, row.id));
       // Also keeps the grade item's name/visibility in sync after an edit.
       await syncGradeItem(tx, activity, s.gradeMax !== undefined ? s.gradeMax : row.gradeMax);
+    },
+    async remove(tx, activity) {
+      // Extra line items are manual gradebook columns: they go with the activity.
+      const extras = await tx.select({ gradeItemId: ltiLineItems.gradeItemId }).from(ltiLineItems).where(eq(ltiLineItems.activityId, activity.id));
+      if (extras.length) await tx.delete(gradeItems).where(inArray(gradeItems.id, extras.map((x) => x.gradeItemId)));
     },
     async load(tx, activity) {
       const row = await linkOf(tx, activity.id);

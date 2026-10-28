@@ -40,6 +40,8 @@ import {
   submissionFiles,
   users,
   videoMeetings,
+  workshopAssessments,
+  workshopSubmissions,
   workshops,
   type DB,
 } from "@lms/db";
@@ -369,6 +371,11 @@ export async function buildCourseBackup(
           .where(inArray(attemptAnswers.attemptId, attempts.map((x) => x.id)))
       : [];
     const records = sessions.length ? await tx.select().from(attendanceRecords).where(inArray(attendanceRecords.sessionId, sessions.map((x) => x.id))) : [];
+    const workshopIds = [...workshopRows.values()].map((w) => w.id);
+    const activityOfWorkshop = new Map([...workshopRows.values()].map((w) => [w.id, w.activityId]));
+    const wsSubs = workshopIds.length ? await tx.select().from(workshopSubmissions).where(inArray(workshopSubmissions.workshopId, workshopIds)) : [];
+    const wsAssessments = wsSubs.length ? await tx.select().from(workshopAssessments).where(inArray(workshopAssessments.submissionId, wsSubs.map((x) => x.id))) : [];
+    for (const sub of wsSubs) for (const f of sub.fileIds) userFileIds.add(f);
 
     for (const id of [
       ...grades.map((g) => g.userId),
@@ -378,6 +385,8 @@ export async function buildCourseBackup(
       ...members.map((m) => m.userId),
       ...attempts.map((x) => x.userId),
       ...records.map((r) => r.userId),
+      ...wsSubs.map((x) => x.userId),
+      ...wsAssessments.map((x) => x.reviewerId),
     ]) {
       await addPerson(id);
     }
@@ -452,6 +461,19 @@ export async function buildCourseBackup(
           })),
       })),
       attendanceRecords: records.map((r) => ({ sessionId: r.sessionId, userId: r.userId, status: r.status, remarks: r.remarks, takenAt: r.takenAt.toISOString() })),
+      workshopSubmissions: wsSubs.map((x) => ({
+        activityId: activityOfWorkshop.get(x.workshopId)!,
+        userId: x.userId,
+        title: x.title,
+        content: x.content,
+        fileIds: x.fileIds,
+        grade: x.grade,
+        gradeOverride: x.gradeOverride,
+        createdAt: x.createdAt.toISOString(),
+        assessments: wsAssessments
+          .filter((a) => a.submissionId === x.id)
+          .map((a) => ({ reviewerId: a.reviewerId, scores: a.scores, grade: a.grade, gradingGrade: a.gradingGrade, feedback: a.feedback, submittedAt: a.submittedAt?.toISOString() ?? null })),
+      })),
     };
   }
 

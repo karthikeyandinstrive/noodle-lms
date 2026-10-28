@@ -137,6 +137,17 @@ export type BackupCourse = {
       }[];
     }[];
     attendanceRecords: { sessionId: string; userId: string; status: string; remarks: string | null; takenAt: string }[];
+    workshopSubmissions: {
+      activityId: string;
+      userId: string;
+      title: string;
+      content: string | null;
+      fileIds: string[];
+      grade: number | null;
+      gradeOverride: number | null;
+      createdAt: string;
+      assessments: { reviewerId: string; scores: Record<string, number> | null; grade: number | null; gradingGrade: number | null; feedback: string | null; submittedAt: string | null }[];
+    }[];
   };
 };
 
@@ -368,6 +379,34 @@ export const zBackupCourse = z.object({
       attendanceRecords: z
         .array(z.object({ sessionId: zIdish, userId: zIdish, status: z.string().max(20), remarks: zNullStr.default(null), takenAt: z.string().max(100) }))
         .max(2_000_000)
+        .default([]),
+      workshopSubmissions: z
+        .array(
+          z.object({
+            activityId: zIdish,
+            userId: zIdish,
+            title: z.string().max(500),
+            content: zNullStr.default(null),
+            fileIds: z.array(zIdish).max(50).default([]),
+            grade: z.number().nullable().default(null),
+            gradeOverride: z.number().nullable().default(null),
+            createdAt: z.string().max(100),
+            assessments: z
+              .array(
+                z.object({
+                  reviewerId: zIdish,
+                  scores: z.record(z.string().max(100), z.number()).nullable().default(null),
+                  grade: z.number().nullable().default(null),
+                  gradingGrade: z.number().nullable().default(null),
+                  feedback: zNullStr.default(null),
+                  submittedAt: zNullStr.default(null),
+                }),
+              )
+              .max(100)
+              .default([]),
+          }),
+        )
+        .max(500_000)
         .default([]),
     })
     .passthrough()

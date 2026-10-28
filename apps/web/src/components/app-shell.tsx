@@ -101,6 +101,24 @@ const ADMIN: NavItem[] = [
   { href: "/admin/audit-log", key: "nav.admin.auditLog", label: "Audit log", icon: ScrollText, capability: "site:view_audit_log" },
 ];
 
+/**
+ * Live message updates: the API streams "a conversation changed" hints (server-sent events)
+ * and we refetch through the normal API. Polling stays on as the fallback if the stream drops.
+ */
+function useLiveMessages(enabled: boolean) {
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (!enabled || typeof EventSource === "undefined") return;
+    const source = new EventSource("/api/v1/messages/stream");
+    const onMessage = () => void qc.invalidateQueries({ queryKey: messagingKeys.all });
+    source.addEventListener("message", onMessage);
+    return () => {
+      source.removeEventListener("message", onMessage);
+      source.close();
+    };
+  }, [enabled, qc]);
+}
+
 function NotificationBell() {
   const t = useT();
   const { data } = useQuery({
@@ -166,6 +184,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const logout = useLogout();
   const t = useT();
+  useLiveMessages(!!session.user);
   const unreadMessages = useQuery({
     queryKey: messagingKeys.unread,
     queryFn: () => api<{ count: number }>("/messages/unread-count").catch(() => ({ count: 0 })),

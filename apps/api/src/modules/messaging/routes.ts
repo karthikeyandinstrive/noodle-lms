@@ -5,6 +5,7 @@ import { z } from "zod";
 import { requireUser } from "../../core/auth";
 import { badRequest, forbidden, must, notFound } from "../../core/errors";
 import { emitInTx } from "../../core/events";
+import { liveListenerCount, publishLive, subscribeLive } from "../../core/live";
 import { hasCapability } from "../../core/rbac";
 import { cleanHtml } from "../../core/sanitize";
 import { offset, ok, paged, zDate, zId, zNullableDate, zOk, zPagination } from "../../core/schemas";
@@ -188,7 +189,44 @@ async function loadOwnMessage(tx: Tx, req: import("fastify").FastifyRequest, mes
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
 
+/** Open live streams per user (more tabs than this fall back to polling). */
+const MAX_STREAMS_PER_USER = 10;
+const HEARTBEAT_MS = 25_000;
+
 export const routes: FastifyPluginAsyncZod = async (app) => {
+  app.get(
+    "/stream",
+    {
+      schema: {
+        tags: ["Messaging"],
+        summary: "Server-sent events: `message` (a conversation of mine changed) — hints to refetch, no message content",
+      },
+    },
+    async (req, reply) => {
+      const me = requireUser(req);
+      if (liveListenerCount(me.id) >= MAX_STREAMS_PER_USER) return reply.status(429).send({ error: { code: "TOO_MANY_STREAMS", message: "Too many open live connections" } });
+      reply.hijack();
+      const res = reply.raw;
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      res.write("retry: 5000\n: connected\n\n");
+      const unsubscribe = subscribeLive(me.id, (event) => {
+        res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      });
+      const heartbeat = setInterval(() => res.write(": ping\n\n"), HEARTBEAT_MS);
+      const close = () => {
+        clearInterval(heartbeat);
+        unsubscribe();
+      };
+      req.raw.on("close", close);
+      res.on("error", close);
+    },
+  );
+
   app.get(
     "/conversations",
     {
@@ -395,9 +433,10 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           userId: me.id,
           courseId: conversation.courseId,
         });
-        return toMessage(msg!, await people(tx, [me.id]), me.id);
+        return { message: toMessage(msg!, await people(tx, [me.id]), me.id), members: await memberIds(tx, conversation.id), conversationId: conversation.id };
       });
-      return reply.status(201).send(out);
+      await publishLive(out.members, { type: "message", conversationId: out.conversationId });
+      return reply.status(201).send(out.message);
     },
   );
 
@@ -407,8 +446,8 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
       schema: { tags: ["Messaging"], summary: "Edit my message (within 15 minutes)", params: idParam, body: zBody, response: { 200: zMessage } },
       config: rateLimited,
     },
-    (req) =>
-      req.tenant(async (tx) => {
+    async (req) => {
+      const out = await req.tenant(async (tx) => {
         const me = requireUser(req);
         const msg = await loadOwnMessage(tx, req, req.params.id);
         const [updated] = await tx
@@ -416,19 +455,25 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           .set({ body: sanitizeBody(req.body.body), updatedAt: new Date() })
           .where(eq(messages.id, msg.id))
           .returning();
-        return toMessage(updated!, await people(tx, [me.id]), me.id);
-      }),
+        return { message: toMessage(updated!, await people(tx, [me.id]), me.id), members: await memberIds(tx, msg.conversationId), conversationId: msg.conversationId };
+      });
+      await publishLive(out.members, { type: "message", conversationId: out.conversationId });
+      return out.message;
+    },
   );
 
   app.delete(
     "/:id",
     { schema: { tags: ["Messaging"], summary: "Delete my message (within 15 minutes; soft delete)", params: idParam, response: { 200: zOk } } },
-    (req) =>
-      req.tenant(async (tx) => {
+    async (req) => {
+      const out = await req.tenant(async (tx) => {
         const msg = await loadOwnMessage(tx, req, req.params.id);
         await tx.update(messages).set({ deletedAt: new Date(), body: "" }).where(eq(messages.id, msg.id));
-        return ok;
-      }),
+        return { members: await memberIds(tx, msg.conversationId), conversationId: msg.conversationId };
+      });
+      await publishLive(out.members, { type: "message", conversationId: out.conversationId });
+      return ok;
+    },
   );
 
   app.post(

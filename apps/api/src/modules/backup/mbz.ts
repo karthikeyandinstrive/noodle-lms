@@ -8,7 +8,8 @@ import { child, children, numberOf, parseXml, path, textOf, type XmlNode } from 
  * so the regular restore engine creates the course.
  *
  * Supported: course settings, sections, page, url, label (as page), assign,
- * forum, quiz (settings and question slots) and the question bank (see mbz-questions.ts).
+ * forum, quiz (settings and question slots), the question bank (see mbz-questions.ts)
+ * and files embedded in course, section and activity HTML (@@PLUGINFILE@@ links).
  * Everything else is reported as unsupported.
  */
 
@@ -25,10 +26,56 @@ export function mbzFilter(name: string) {
     name === "moodle_backup.xml" ||
     name === "course/course.xml" ||
     name === "questions.xml" ||
+    name === "files.xml" ||
     /^sections\/[^/]+\/section\.xml$/.test(name) ||
     /^activities\/[^/]+\/(module|page|url|label|assign|forum|quiz)\.xml$/.test(name)
   );
 }
+
+// ─── Embedded files ───────────────────────────────────────────────────────
+
+/** File areas whose files are embedded in HTML we import. */
+const EMBEDDED_AREAS = new Set(["course|summary", "course|section", "mod_page|content", "mod_assign|activity", "mod_assign|introattachment"]);
+const isEmbeddedArea = (component: string, area: string) => area === "intro" || EMBEDDED_AREAS.has(`${component}|${area}`);
+
+type MoodleFile = { id: string; contextId: string; component: string; area: string; itemId: string; filepath: string; filename: string; mimeType: string; size: number; path: string };
+
+/** Readable entries of files.xml that belong to areas we import (directories and empty files excluded). */
+function moodleFiles(files: ArchiveFiles): MoodleFile[] {
+  const root = path(xmlFile(files, "files.xml"), "files");
+  const out: MoodleFile[] = [];
+  const seen = new Set<string>();
+  for (const f of children(root, "file")) {
+    const filename = textOf(f, "filename") ?? "";
+    const hash = (textOf(f, "contenthash") ?? "").trim();
+    const component = textOf(f, "component") ?? "";
+    const area = textOf(f, "filearea") ?? "";
+    if (!filename || filename === "." || !/^[0-9a-f]{40}$/.test(hash) || !isEmbeddedArea(component, area)) continue;
+    const key = `${textOf(f, "contextid")}|${component}|${area}|${textOf(f, "itemid")}|${textOf(f, "filepath")}|${filename}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: crypto.randomUUID(),
+      contextId: (textOf(f, "contextid") ?? "").trim(),
+      component,
+      area,
+      itemId: (textOf(f, "itemid") ?? "0").trim(),
+      filepath: textOf(f, "filepath") ?? "/",
+      filename,
+      mimeType: textOf(f, "mimetype") ?? "application/octet-stream",
+      size: numberOf(f, "filesize") ?? 0,
+      path: `files/${hash.slice(0, 2)}/${hash}`,
+    });
+  }
+  return out;
+}
+
+/** Archive entries holding the bodies of embedded files (read in a second pass, so only these are kept in memory). */
+export function mbzEmbeddedFilePaths(files: ArchiveFiles) {
+  return new Set(moodleFiles(files).map((f) => f.path));
+}
+
+type FileScope = { contextId: string | undefined; component: string; areas: string[]; itemId?: string };
 
 function xmlFile(files: ArchiveFiles, name: string): XmlNode | null {
   const buf = files.get(name);
@@ -38,12 +85,44 @@ function xmlFile(files: ArchiveFiles, name: string): XmlNode | null {
 const unix = (n: number | null) => (n && n > 0 ? new Date(n * 1000).toISOString() : null);
 const bool = (n: number | null, fallback = true) => (n === null ? fallback : n !== 0);
 
-function moodleHtml(html: string | null, report: RestoreReport, where: string) {
+/**
+ * Rewrites @@PLUGINFILE@@ links to the imported copies (`/api/v1/files/<id>`, which the
+ * restore engine maps to the stored file). Links to files that weren't in the backup are reported.
+ */
+function rewritePluginFiles(html: string | null, available: MoodleFile[], used: Set<MoodleFile>, report: RestoreReport, where: string, scope?: FileScope) {
   if (!html) return null;
-  if (html.includes("@@PLUGINFILE@@")) {
-    report.warnings.push(`${where}: embedded Moodle files (images, attachments) were not imported`);
-  }
-  return html;
+  if (!html.includes("@@PLUGINFILE@@")) return html;
+  let missing = 0;
+  const out = html.replace(/@@PLUGINFILE@@(\/[^"'\s<>?#]*)/g, (m, rawPath: string) => {
+    let decoded = rawPath;
+    try {
+      decoded = decodeURIComponent(rawPath);
+    } catch {
+      /* keep raw */
+    }
+    const slash = decoded.lastIndexOf("/");
+    const filepath = decoded.slice(0, slash + 1);
+    const filename = decoded.slice(slash + 1);
+    const hit = scope
+      ? available.find(
+          (f) =>
+            f.contextId === scope.contextId &&
+            f.component === scope.component &&
+            scope.areas.includes(f.area) &&
+            (scope.itemId === undefined || f.itemId === scope.itemId) &&
+            f.filepath === filepath &&
+            f.filename === filename,
+        )
+      : undefined;
+    if (!hit) {
+      missing++;
+      return m;
+    }
+    used.add(hit);
+    return `/api/v1/files/${hit.id}?inline=true`;
+  });
+  if (missing) report.warnings.push(`${where}: ${missing} embedded Moodle file(s) were not in the backup and were left as broken links`);
+  return out;
 }
 
 function completionRule(module: XmlNode | null) {
@@ -77,6 +156,11 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
   const format = textOf(courseXml, "format");
 
   const bank = parseMoodleQuestions(xmlFile(files, "questions.xml"), report);
+  // Embedded files whose bodies are in the archive (the caller loads them in a second pass).
+  const available = moodleFiles(files).filter((f) => files.has(f.path));
+  const used = new Set<MoodleFile>();
+  const courseContextId = path(xmlFile(files, "course/course.xml"), "course")?.attrs.contextid;
+  const moodleHtml = (html: string | null, _report: RestoreReport, where: string, scope?: FileScope) => rewritePluginFiles(html, available, used, report, where, scope);
   const contents = child(info, "contents");
   const sectionEntries = children(child(contents, "sections"), "section");
   const activityEntries = children(child(contents, "activities"), "activity");
@@ -87,13 +171,14 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
     const sectionId = textOf(s, "sectionid") ?? String(i);
     const dir = textOf(s, "directory") ?? `sections/section_${sectionId}`;
     const xml = path(xmlFile(files, `${dir}/section.xml`), "section");
+    const sectionScope: FileScope = { contextId: courseContextId, component: "course", areas: ["section"], itemId: xml?.attrs.id ?? sectionId };
     const number = numberOf(xml, "number") ?? i;
     // moodle_backup.xml's section <title> is just the section number: only <name> is meaningful.
     const name = textOf(xml, "name");
     sections.push({
       id: sectionId,
       title: (name && name.trim()) || (number === 0 ? "General" : `Topic ${number}`),
-      summary: moodleHtml(textOf(xml, "summary"), report, `Section "${name ?? number}"`),
+      summary: moodleHtml(textOf(xml, "summary"), report, `Section "${name ?? number}"`, sectionScope),
       position: number,
       visible: bool(numberOf(xml, "visible")),
     });
@@ -113,13 +198,16 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
     }
     const dir = textOf(a, "directory") ?? `activities/${modName}_${moduleId}`;
     const module = path(xmlFile(files, `${dir}/module.xml`), "module");
-    const mod = path(xmlFile(files, `${dir}/${modName}.xml`), "activity", modName);
+    const activityXml = path(xmlFile(files, `${dir}/${modName}.xml`), "activity");
+    const mod = child(activityXml, modName);
+    const contextId = activityXml?.attrs.contextid;
+    const scope = (...areas: string[]): FileScope => ({ contextId, component: `mod_${modName}`, areas });
     if (!mod) {
       report.warnings.push(`Activity "${title}" (${modName}) has no settings file and was skipped`);
       continue;
     }
     const name = (textOf(mod, "name") ?? title ?? modName).trim().slice(0, 255) || modName;
-    const intro = moodleHtml(textOf(mod, "intro"), report, `"${name}"`);
+    const intro = moodleHtml(textOf(mod, "intro"), report, `"${name}"`, scope("intro"));
     const seq = sequenceOf.get(sectionId) ?? [];
     const position = seq.indexOf(moduleId) >= 0 ? seq.indexOf(moduleId) : 1000 + i;
     const common = {
@@ -136,7 +224,7 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
 
     switch (modName) {
       case "page":
-        acts.push({ ...common, type: "page", description: intro, data: { content: moodleHtml(textOf(mod, "content"), report, `Page "${name}"`) ?? "" } });
+        acts.push({ ...common, type: "page", description: intro, data: { content: moodleHtml(textOf(mod, "content"), report, `Page "${name}"`, scope("content")) ?? "" } });
         break;
       case "label":
         acts.push({ ...common, type: "page", description: null, data: { content: intro ?? "" } });
@@ -155,7 +243,7 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
           type: "assignment",
           description: intro,
           data: {
-            instructions: moodleHtml(textOf(mod, "activity"), report, `Assignment "${name}"`),
+            instructions: moodleHtml(textOf(mod, "activity"), report, `Assignment "${name}"`, scope("activity", "introattachment")),
             allowText: assignPluginConfig(mod, "onlinetext", "enabled") === "1",
             allowFiles: assignPluginConfig(mod, "file", "enabled") !== "0",
             maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? Math.min(maxFiles, 100) : 5,
@@ -212,13 +300,13 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
     }
   }
   for (const [mod, n] of unsupportedCounts) report.unsupported.push(`${n} Moodle "${mod}" activit${n === 1 ? "y" : "ies"}`);
-  report.unsupported.push("Moodle user data, files, grade setup and restrictions are not imported");
+  report.unsupported.push("Moodle user data, attachments outside text, grade setup and restrictions are not imported");
 
   return zBackupCourse.parse({
     course: {
       fullname: fullname.trim().slice(0, 255) || "Imported course",
       shortname: shortname.trim().slice(0, 100) || "imported",
-      summary: moodleHtml(textOf(courseXml, "summary"), report, "Course summary"),
+      summary: moodleHtml(textOf(courseXml, "summary"), report, "Course summary", { contextId: courseContextId, component: "course", areas: ["summary"] }),
       format: format === "weeks" ? "weeks" : format === "singleactivity" ? "single" : "topics",
       visible: bool(numberOf(courseXml, "visible")),
       startDate: unix(numberOf(courseXml, "startdate")),
@@ -227,5 +315,6 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
     sections,
     activities: acts,
     questionBank: { categories: bank.categories, questions: bank.questions },
+    files: [...used].map((f) => ({ id: f.id, filename: f.filename.slice(0, 255), mimeType: f.mimeType.slice(0, 255), size: f.size, path: f.path })),
   });
 }

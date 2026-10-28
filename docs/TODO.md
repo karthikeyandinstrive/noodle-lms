@@ -9,15 +9,19 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 - [ ] **Decide repository visibility.** `karthikeyandinstrive/noodle-lms` is currently **public**; switch it to private in Settings → General if needed. No secrets are committed.
 - [ ] **Check the first CI run** (typecheck, lint, tests, build, PostgreSQL 16 migrations, Playwright E2E, dependency audit) and fix anything that fails.
 
-## P0 — Before production (needs infrastructure or accounts, not code)
+## P0 — Before production (needs your accounts or infrastructure)
 
-- [ ] **Run on real PostgreSQL 16.** Locally everything ran on embedded PGlite. CI (`.github/workflows/ci.yml` → `postgres` job) runs migrations and the seed against Postgres once the repo has a remote. The `lms_app` role needs `CREATEROLE`, or a DBA must create it.
-- [ ] **Run the Docker Compose stack** (Docker isn't installed on the dev machine).
-- [ ] **Payments with Stripe/Razorpay test accounts**: checkout, webhooks, refunds.
-- [ ] **SSO against real identity providers** (Google / Entra ID / Okta, plus one SAML IdP). Tests only cover an in-process mock OIDC IdP and SAML metadata/redirect.
-- [ ] **LTI 1.3 against a real tool** (e.g. the IMS reference tool) and **SCORM** with real packages (SCORM Cloud samples).
-- [ ] **H5P player live check.** It loads `h5p-standalone@3.6.0` from jsDelivr with no SRI hash.
-- [ ] **Production secrets and TLS**: `ENCRYPTION_KEY`, `URL_SIGNING_SECRET`, `SMTP_URL`, `REDIS_URL` (required with more than one API instance), `METRICS_TOKEN`, storage and Stripe keys.
+Step-by-step checks for each item are in [PRODUCTION.md](PRODUCTION.md).
+
+- [x] **Real PostgreSQL**: migrations (idempotent), seed, all integration tests and E2E pass on PostgreSQL 18 as a non-superuser owner; CI runs the same on PostgreSQL 16. Found and fixed two bugs only real Postgres shows (see Done).
+- [x] **Production secrets and config checks**: `npm run secrets`; the API refuses to start with unsafe config and warns about degraded settings.
+- [ ] **Docker Compose stack**: needs Docker on a machine (not installed here).
+- [ ] **TLS and real secrets** on the production host (proxy in front, `APP_URL=https://…`, SMTP, Redis, S3).
+- [ ] **Payments** with Stripe/Razorpay test accounts: checkout, webhooks, refunds, SaaS subscriptions.
+- [ ] **SSO** against real identity providers (Google / Entra ID / Okta, plus one SAML IdP).
+- [ ] **LTI 1.3** against a real tool (IMS reference tool or saLTIre); needs a publicly reachable staging URL.
+- [ ] **SCORM** with real packages (Rustici Golf examples, including multi-SCO).
+- [ ] **H5P** live check and SRI hashes (or self-hosting) for `h5p-standalone@3.6.0`.
 
 ## P1 — Soon
 
@@ -28,15 +32,14 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 
 ## P2 — Improvements
 
-- [ ] LTI: multiple line items per resource link (one per link today).
 - [ ] SCORM 2004 sequencing rules (pre/post conditions, rollup rules); SCOs can be opened in any order today.
-- [ ] Moodle `.mbz` import of files (embedded images, attachments), grade setup, random questions and calculated/drag-and-drop question types.
-- [ ] Restore workshop submissions and assessments from backups (everything else of learners' work is restored).
+- [ ] Moodle `.mbz` import of grade setup, random questions, calculated/drag-and-drop question types, and file resources/attachments outside HTML text.
+- [ ] Live updates for notifications too (messages are live; notifications still poll every minute).
 
 ## P3 — Future scope
 
-- [ ] Push notifications / websockets for messages (currently polled)
-- [ ] PWA / offline support
+- [ ] Web push notifications (the service worker is in place; needs VAPID keys and a subscription store)
+- [ ] Offline reading of course content (today offline shows a friendly page; nothing is cached for reading)
 - [ ] Native mobile app (the bearer-token API is ready: `POST /auth/token`, MFA via `/auth/mfa/verify?mode=token`)
 - [ ] xAPI / LRS integration
 
@@ -72,5 +75,12 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 - [x] LTI AGS **result service** (`result.readonly`) and **course-level tools** registered by teachers (`lti:manage_course_tools`, course "External tools" tab)
 - [x] Moodle `.mbz` import of the **question bank** (3.x and 4.x layouts; multichoice, true/false, short answer, numerical, essay, matching) and quiz question slots
 - [x] Backups now include and restore **finished quiz attempts** (with answers) and **attendance records**
-- [x] **417 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
+- [x] Backups restore **workshop submissions and peer assessments** (with files)
+- [x] Moodle `.mbz` import of **embedded images/files** in course, section, page, assignment and intro HTML (`@@PLUGINFILE@@` links rewritten)
+- [x] LTI **multiple line items** per resource link (extra gradebook columns; create/read/update/delete, scores and results per line item)
+- [x] **Live message updates** over server-sent events (`/messages/stream`, Redis pub/sub across replicas; polling stays as the fallback)
+- [x] **Installable PWA**: manifest, icons, service worker with an offline page (production builds only)
+- [x] Fixed: events emitted right after storing them could skip immediate dispatch (JS vs database clock precision); they now compare with the database clock
+- [x] Fixed: on PostgreSQL 16+, a non-superuser app owner couldn't switch to `lms_app` (every request failed); migrations now grant it explicitly and fail with instructions if they can't
+- [x] **424 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
 - [x] Pushed to GitHub: `karthikeyandinstrive/noodle-lms` (`main` + `feature/initial-lms`)

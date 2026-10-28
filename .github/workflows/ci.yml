@@ -34,21 +34,23 @@ jobs:
           API_URL: http://localhost:4000
 
   postgres:
-    name: Migrations + integration tests on PostgreSQL 16
+    name: PostgreSQL 16 (non-superuser app role) — migrations, integration tests, E2E
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: lms
-          POSTGRES_PASSWORD: lms
-          POSTGRES_DB: lms
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U lms" --health-interval 5s --health-retries 20
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
     env:
-      DATABASE_URL: postgresql://lms:lms@localhost:5432/lms
+      ADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      # Production-like: the app owns its database but is not a superuser.
+      DATABASE_URL: postgresql://lms_owner:lms_owner_password@localhost:5432/lms
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,12 +58,25 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Create the app's database owner (CREATEROLE, not superuser)
+        run: |
+          psql "$ADMIN_URL" -c "create role lms_owner login createrole password 'lms_owner_password'"
+          psql "$ADMIN_URL" -c "create database lms owner lms_owner"
+          psql "${ADMIN_URL%/*}/lms" -c "alter schema public owner to lms_owner"
       - run: npm run db:migrate
       - run: npm run db:seed
         env:
           SEED_PASSWORD: CiPassword123
       - name: Migrations are idempotent
         run: npm run db:migrate
+      - name: Integration tests on PostgreSQL (one database per file)
+        run: sh scripts/test-postgres.sh
+      - name: End-to-end on PostgreSQL
+        run: |
+          psql "$ADMIN_URL" -c "drop database if exists lms_e2e" -c "create database lms_e2e owner lms_owner"
+          psql "${ADMIN_URL%/*}/lms_e2e" -c "alter schema public owner to lms_owner"
+          npx playwright install --with-deps chromium
+          DATABASE_URL=postgresql://lms_owner:lms_owner_password@localhost:5432/lms_e2e npm run test:e2e
 
   e2e:
     name: End-to-end (Playwright)

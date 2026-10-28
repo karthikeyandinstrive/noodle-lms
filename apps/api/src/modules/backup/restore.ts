@@ -39,6 +39,8 @@ import {
   scormPackages,
   users,
   videoMeetings,
+  workshopAssessments,
+  workshopSubmissions,
   workshops,
   type DB,
 } from "@lms/db";
@@ -805,7 +807,14 @@ async function fileExists(tx: DB, id: string) {
 type UserData = NonNullable<ParsedBackupCourse["userData"]>;
 
 const hasUserActivity = (d: UserData) =>
-  d.grades.length + d.submissions.length + d.forumDiscussions.length + d.groupMembers.length + d.quizAttempts.length + d.attendanceRecords.length > 0;
+  d.grades.length +
+    d.submissions.length +
+    d.forumDiscussions.length +
+    d.groupMembers.length +
+    d.quizAttempts.length +
+    d.attendanceRecords.length +
+    d.workshopSubmissions.length >
+  0;
 
 /**
  * Restores learners' work for users that exist (by email) in this organization:
@@ -1087,6 +1096,62 @@ async function restoreUserData(
     bump(report, "attendanceRecords");
   }
   if (taken.size) await tx.update(attendanceSessions).set({ takenAt: new Date() }).where(and(inArray(attendanceSessions.id, [...taken]), isNull(attendanceSessions.takenAt)));
+
+  // Workshop submissions and their peer assessments (reviews by people not restored are skipped).
+  const workshopRows = ctx.activityMap.size
+    ? await tx
+        .select({ id: workshops.id, activityId: workshops.activityId, contextId: activities.contextId })
+        .from(workshops)
+        .innerJoin(activities, eq(activities.id, workshops.activityId))
+        .where(inArray(workshops.activityId, [...ctx.activityMap.values()]))
+    : [];
+  const workshopOf = new Map(workshopRows.map((w) => [w.activityId, w]));
+  for (const sub of userData.workshopSubmissions) {
+    const newActivityId = ctx.activityMap.get(sub.activityId);
+    const workshop = newActivityId ? workshopOf.get(newActivityId) : undefined;
+    const uid = who(sub.userId);
+    if (!workshop || !uid) continue;
+    const [row] = await tx
+      .insert(workshopSubmissions)
+      .values({
+        organizationId,
+        workshopId: workshop.id,
+        userId: uid,
+        title: sub.title.slice(0, 255),
+        content: await ctx.html(sub.content, workshop.contextId),
+        grade: sub.grade,
+        gradeOverride: sub.gradeOverride,
+        createdAt: toDate(sub.createdAt) ?? new Date(),
+      })
+      .onConflictDoNothing()
+      .returning({ id: workshopSubmissions.id });
+    if (!row) continue;
+    const fileIds: string[] = [];
+    for (const fid of sub.fileIds) {
+      const id = await ctx.restoreFile(fid, { component: "workshop", area: "submission", itemId: row.id, contextId: workshop.contextId, ownerId: uid });
+      if (id) fileIds.push(id);
+    }
+    if (fileIds.length) await tx.update(workshopSubmissions).set({ fileIds }).where(eq(workshopSubmissions.id, row.id));
+    for (const a of sub.assessments) {
+      const reviewer = who(a.reviewerId);
+      if (!reviewer) continue;
+      await tx
+        .insert(workshopAssessments)
+        .values({
+          organizationId,
+          submissionId: row.id,
+          reviewerId: reviewer,
+          scores: a.scores,
+          grade: a.grade,
+          gradingGrade: a.gradingGrade,
+          feedback: a.feedback ? cleanHtml(a.feedback) : null,
+          submittedAt: toDate(a.submittedAt),
+        })
+        .onConflictDoNothing();
+      bump(report, "workshopAssessments");
+    }
+    bump(report, "workshopSubmissions");
+  }
 
   if (skipped) report.warnings.push(`${skipped} user data record(s) were skipped: their user doesn't exist in this organization`);
 }

@@ -84,6 +84,9 @@ e2e/                      Playwright specs + server start script
   `remove` hook, which runs before an activity or its course is deleted. Use `queuePackageCleanup`.
 - **Permission checks in loops**: call `prefetchCapabilities(tx, req, caps, contextIds)` first.
   It fills the request's capability cache in a few queries, so the `hasCapability` calls after it are free.
+- **Live updates** (`core/live.ts`): call `publishLive(userIds, event)` after the change commits. Events are
+  hints to refetch, never data. The service worker (`apps/web/public/sw.js`) registers in production only and
+  never caches `/api`; bump `VERSION` in it when its caching changes.
 - **SCORM**: single-SCO packages keep the CMI on `scorm_attempts`; multi-SCO packages use
   `scorm_sco_tracks` (one row per SCO), and the attempt row then holds the rolled-up result.
 - Missing **or forbidden** resources return 404, so their existence isn't leaked. Keep that pattern.
@@ -92,10 +95,11 @@ e2e/                      Playwright specs + server start script
 
 - Branch `feature/initial-lms` is pushed to https://github.com/karthikeyandinstrive/noodle-lms
   (`main` holds only the Create Next App scaffold). **The PR is not opened yet**; opening it runs CI.
-- 417 unit/integration tests and 8 E2E tests pass. Typecheck, lint and the production build are clean.
+- 424 unit/integration tests and 8 E2E tests pass, on embedded PGlite and on real PostgreSQL 18 as a
+  non-superuser (`npm run test:postgres`). Typecheck, lint and the production build are clean.
   `npm audit` reports no high or critical findings.
-- **Never tested against real services:** PostgreSQL 16 (only PGlite so far), the Docker Compose
-  stack, Stripe/Razorpay, real SSO IdPs, real LTI tools/SCORM packages, the H5P player.
+- **Never tested against real services:** the Docker Compose stack, Stripe/Razorpay, real SSO IdPs,
+  real LTI tools/SCORM packages, the H5P player. The runbook for each is docs/PRODUCTION.md.
 - The repo is currently **public**; the owner still has to decide on visibility.
 
 Next steps are at the top of [docs/TODO.md](docs/TODO.md).

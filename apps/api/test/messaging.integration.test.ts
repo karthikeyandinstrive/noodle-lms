@@ -221,3 +221,34 @@ describe("global search", () => {
     expect((await new Client(env.app).req("GET", "/search?q=x")).status).toBe(401);
   });
 });
+
+describe("live updates (server-sent events)", () => {
+  it("streams a hint to conversation members when a message arrives, and requires sign-in", async () => {
+    const http = await import("node:http");
+    await env.app.listen({ port: 0, host: "127.0.0.1" });
+    const port = (env.app.server.address() as import("node:net").AddressInfo).port;
+    const open = (cookie?: string) =>
+      new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
+        http.get({ host: "127.0.0.1", port, path: "/api/v1/messages/stream", headers: { host: "localhost", ...(cookie ? { cookie } : {}) } }, resolve).on("error", reject);
+      });
+
+    expect((await open()).statusCode).toBe(401);
+
+    const res = await open(s2.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/event-stream");
+    let buffer = "";
+    const got = new Promise<string>((resolve) => {
+      res.on("data", (chunk: Buffer) => {
+        buffer += chunk.toString();
+        if (buffer.includes("event: message")) resolve(buffer);
+      });
+    });
+    expect((await s1.req("POST", `/messages/conversations/${conversationId}/messages`, { body: "Are you there?" })).status).toBe(201);
+    const text = await Promise.race([got, new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`no event: ${buffer}`)), 5000))]);
+    expect(text).toContain(`"conversationId":"${conversationId}"`);
+    // Hints only: the message text never travels over the stream.
+    expect(text).not.toContain("Are you there?");
+    res.destroy();
+  });
+});

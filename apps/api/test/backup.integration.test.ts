@@ -124,6 +124,11 @@ beforeAll(async () => {
   const sessions = await admin.req("POST", `/attendance/${act.attendance}/sessions`, { startsAt: "2030-02-01T09:00:00.000Z" });
   expect(sessions.status, JSON.stringify(sessions.body)).toBe(201);
   expect((await admin.req("PUT", `/attendance/${act.attendance}/sessions/${sessions.body.ids[0]}/records`, { records: [{ userId: learnerId, status: "late", remarks: "Bus" }] })).status).toBe(200);
+  await make("workshop", { type: "workshop", sectionId: general, name: "Peer review", settings: {} });
+  expect((await admin.req("PUT", `/workshops/${act.workshop}/phase`, { phase: "submission" })).status).toBe(200);
+  const wsFile = await upload(student, "draft.txt", "text/plain", Buffer.from("my draft"));
+  const ws = await student.req("PUT", `/workshops/${act.workshop}/submission`, { title: "My essay", content: "<p>Thoughts</p>", fileIds: [wsFile] });
+  expect(ws.status, JSON.stringify(ws.body)).toBeLessThan(300);
   await runJobs();
 });
 
@@ -183,14 +188,14 @@ describe("restore", () => {
     expect(row.body.status, row.body.error).toBe("done");
     restoredId = row.body.courseId;
     expect(restoredId).not.toBe(courseId);
-    expect(row.body.report.counts).toMatchObject({ activities: 8, questions: 2, quizSlots: 3, sections: 2, groups: 1 });
+    expect(row.body.report.counts).toMatchObject({ activities: 9, questions: 2, quizSlots: 3, sections: 2, groups: 1 });
     expect(row.body.report.unsupported.join(" ")).toMatch(/User data/);
 
     const overview = await admin.req("GET", `/courses/${restoredId}`);
     expect(overview.body.course).toMatchObject({ fullname: "Chemistry 101 (copy)", shortname: "CHEM101_1", summary: "<p>Atoms</p>" });
     expect(overview.body.sections.map((s: { title: string }) => s.title)).toEqual(["General", "Week 2"]);
     const all = overview.body.sections.flatMap((s: { activities: { id: string; name: string; type: string; visible: boolean }[] }) => s.activities);
-    expect(all.map((a: { name: string }) => a.name)).toEqual(["Welcome", "Periodic table", "Safety notes", "Warm-up quiz", "Lab attendance", "Lab report", "Questions", "Atoms quiz"]);
+    expect(all.map((a: { name: string }) => a.name)).toEqual(["Welcome", "Periodic table", "Safety notes", "Warm-up quiz", "Lab attendance", "Peer review", "Lab report", "Questions", "Atoms quiz"]);
     const byName = (n: string) => all.find((a: { name: string }) => a.name === n)!;
     for (const a of all) expect(Object.values(act)).not.toContain(a.id);
     expect(byName("Atoms quiz").visible).toBe(false);
@@ -234,7 +239,7 @@ describe("restore", () => {
     expect(groups.body.map((g: { name: string }) => g.name)).toEqual(["Lab A"]);
     // The original is untouched.
     const original = await admin.req("GET", `/courses/${courseId}`);
-    expect(original.body.sections.flatMap((s: { activities: unknown[] }) => s.activities)).toHaveLength(8);
+    expect(original.body.sections.flatMap((s: { activities: unknown[] }) => s.activities)).toHaveLength(9);
   });
 
   it("restores across organizations and enrols users that exist by email", async () => {
@@ -285,7 +290,7 @@ describe("restore", () => {
     expect(JSON.stringify(grades.body)).toContain("32");
 
     // Their finished quiz attempt and attendance record came across.
-    expect(row.body.report.counts).toMatchObject({ quizAttempts: 1, attendanceRecords: 1 });
+    expect(row.body.report.counts).toMatchObject({ quizAttempts: 1, attendanceRecords: 1, workshopSubmissions: 1 });
     const acts = overview.body.sections.flatMap((s: { activities: { id: string; name: string }[] }) => s.activities);
     const warmup = acts.find((a: { name: string }) => a.name === "Warm-up quiz");
     const myQuiz = await learner.req("GET", `/quizzes/${warmup.id}`);
@@ -347,6 +352,8 @@ const MOODLE_QUESTIONS = `<?xml version="1.0" encoding="UTF-8"?><question_catego
 </question_bank_entries></question_category>
 </question_categories>`;
 
+const DIAGRAM_HASH = "3f786850e387550fdab836ed7e6dc881de23001b";
+
 function mbz() {
   const activity = (id: number, mod: string, section: number, title: string) =>
     `<activity><moduleid>${id}</moduleid><sectionid>${section}</sectionid><modulename>${mod}</modulename><title>${title}</title><directory>activities/${mod}_${id}</directory></activity>`;
@@ -368,7 +375,15 @@ function mbz() {
     ["sections/section_1/section.xml", `<section id="1"><number>0</number><name>$@NULL@$</name><summary></summary><sequence>11,16,12</sequence><visible>1</visible></section>`],
     ["sections/section_2/section.xml", `<section id="2"><number>1</number><name>Mechanics</name><summary>&lt;p&gt;Newton&lt;/p&gt;</summary><sequence>13,14,15,17</sequence><visible>1</visible></section>`],
     ["activities/page_11/module.xml", module(11, "page")],
-    ["activities/page_11/page.xml", `<activity id="1" moduleid="11" modulename="page"><page id="1"><name>Intro</name><intro></intro><content><![CDATA[<p>Welcome to physics</p>]]></content></page></activity>`],
+    [
+      "activities/page_11/page.xml",
+      `<activity id="1" moduleid="11" modulename="page" contextid="57"><page id="1"><name>Intro</name><intro></intro><content><![CDATA[<p>Welcome to physics</p><img src="@@PLUGINFILE@@/forces%20diagram.png" alt="Forces"><img src="@@PLUGINFILE@@/missing.png">]]></content></page></activity>`,
+    ],
+    [
+      "files.xml",
+      `<files><file id="1"><contenthash>${DIAGRAM_HASH}</contenthash><contextid>57</contextid><component>mod_page</component><filearea>content</filearea><itemid>0</itemid><filepath>/</filepath><filename>forces diagram.png</filename><filesize>11</filesize><mimetype>image/png</mimetype></file><file id="2"><contenthash>da39a3ee5e6b4b0d3255bfef95601890afd80709</contenthash><contextid>57</contextid><component>mod_page</component><filearea>content</filearea><itemid>0</itemid><filepath>/</filepath><filename>.</filename></file></files>`,
+    ],
+    [`files/${DIAGRAM_HASH.slice(0, 2)}/${DIAGRAM_HASH}`, "PNG-BYTES!!"],
     ["activities/url_12/module.xml", module(12, "url")],
     ["activities/url_12/url.xml", `<activity id="2" moduleid="12" modulename="url"><url id="2"><name>Docs</name><intro></intro><externalurl>https://example.org/docs</externalurl></url></activity>`],
     ["activities/assign_13/module.xml", module(13, "assign")],
@@ -413,6 +428,14 @@ describe("Moodle .mbz import", () => {
     expect(new Date(assign.body.settings.dueAt).getTime()).toBe(1893456000 * 1000);
     const quiz = await admin.req("GET", `/activities/${s2[2].id}`);
     expect(quiz.body.settings).toMatchObject({ timeLimitSeconds: 600, attemptsAllowed: 2, gradeMethod: "first" });
+
+    // Embedded images were imported and their links rewritten; a file missing from the backup is reported.
+    const intro = await admin.req("GET", `/activities/${overview.body.sections[0].activities[0].id}`);
+    const fileId = /\/files\/([0-9a-f-]{36})/.exec(intro.body.settings.content)?.[1];
+    expect(fileId, intro.body.settings.content).toBeTruthy();
+    expect((await download(admin, fileId!)).toString()).toBe("PNG-BYTES!!");
+    expect(row.body.report.counts.files).toBe(1);
+    expect(row.body.report.warnings.join(" ")).toMatch(/1 embedded Moodle file\(s\) were not in the backup/);
 
     // The question bank and the quiz's slots came across.
     const slots = await admin.req("GET", `/quizzes/${s2[2].id}/slots`);

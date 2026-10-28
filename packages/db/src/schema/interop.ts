@@ -2,6 +2,7 @@ import { boolean, index, integer, jsonb, numeric, pgEnum, pgTable, text, uniqueI
 import { createdAt, id, orgId, ts, updatedAt } from "./_common";
 import { files, organizations, users } from "./core";
 import { activities, courses } from "./courses";
+import { gradeItems } from "./gradebook";
 
 const grade = () => numeric({ precision: 10, scale: 5, mode: "number" });
 
@@ -68,6 +69,28 @@ export const ltiLinks = pgTable("lti_links", {
 });
 
 /** Short-lived state between OIDC login initiation and the launch (nonce, target activity). */
+/**
+ * Extra AGS line items a tool created for its resource link (the link's own line item
+ * is `lti_links.grade_max`). Each one is a manual column in the course gradebook.
+ */
+export const ltiLineItems = pgTable(
+  "lti_line_items",
+  {
+    id: id(),
+    organizationId: orgId().references(() => organizations.id, { onDelete: "cascade" }),
+    activityId: uuid()
+      .notNull()
+      .references(() => activities.id, { onDelete: "cascade" }),
+    gradeItemId: uuid()
+      .notNull()
+      .references(() => gradeItems.id, { onDelete: "cascade" }),
+    resourceId: text(),
+    tag: text(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("lti_line_items_activity_idx").on(t.activityId)],
+);
+
 export const ltiLaunches = pgTable(
   "lti_launches",
   {

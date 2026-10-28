@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { productionProblems } from "./production-check";
 
 const bool = z
   .enum(["true", "false", "1", "0"])
@@ -72,9 +73,9 @@ if (!parsed.success) {
 const env = parsed.data;
 
 if (env.NODE_ENV === "production") {
-  for (const key of ["ENCRYPTION_KEY", "URL_SIGNING_SECRET"] as const) {
-    if (!env[key]) throw new Error(`${key} is required in production`);
-  }
+  const { errors, warnings } = productionProblems({ ...env, DATABASE_URL: process.env.DATABASE_URL });
+  for (const w of warnings) process.stderr.write(`${JSON.stringify({ level: "warn", msg: `config: ${w}` })}\n`);
+  if (errors.length) throw new Error(`Production configuration is not safe to start:\n - ${errors.join("\n - ")}\nGenerate secrets with: npm run secrets`);
 }
 
 export const config = {

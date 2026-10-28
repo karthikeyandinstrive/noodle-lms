@@ -90,6 +90,8 @@ export async function pushGrade(
   input: {
     organizationId: string;
     activityId: string;
+    /** A specific grade item (e.g. an extra LTI line item) instead of the activity's own item. */
+    itemId?: string;
     userId: string;
     /** In the activity's own scale (0..gradeMax). null clears the grade. */
     rawGrade: number | null;
@@ -98,7 +100,11 @@ export async function pushGrade(
     source: string;
   },
 ): Promise<EventMap["grade.updated"] | null> {
-  const [item] = await tx.select().from(gradeItems).where(eq(gradeItems.activityId, input.activityId)).limit(1);
+  const [item] = await tx
+    .select()
+    .from(gradeItems)
+    .where(input.itemId ? eq(gradeItems.id, input.itemId) : eq(gradeItems.activityId, input.activityId))
+    .limit(1);
   if (!item) return null;
 
   const raw = input.rawGrade === null ? null : Math.max(item.gradeMin, Math.min(item.gradeMax, input.rawGrade));
@@ -151,7 +157,8 @@ export async function pushGrade(
     courseId: item.courseId,
     userId: input.userId,
     itemId: item.id,
-    activityId: input.activityId,
+    // Only the activity's own item counts for its completion rules.
+    activityId: item.activityId,
     finalGrade,
     gradeMax: item.gradeMax,
     gradePass: item.gradePass,

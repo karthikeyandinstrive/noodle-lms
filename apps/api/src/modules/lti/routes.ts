@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, lt, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import {
@@ -11,6 +11,7 @@ import {
   getSystemContext,
   ltiKeys,
   ltiLaunches,
+  ltiLineItems,
   ltiLinks,
   ltiTools,
   organizations,
@@ -35,7 +36,7 @@ import { ok, zDate, zId, zOk, patchSchema } from "../../core/schemas";
 import type { SessionUser } from "../../core/types";
 import { loadActivity } from "../activities/service";
 import { isEnrolled, loadCourseWith } from "../courses/service";
-import { pushGrade, syncActivityGradeItem } from "../gradebook/service";
+import { pushGrade, rootCategory, syncActivityGradeItem } from "../gradebook/service";
 import {
   ACTIVITY_PROGRESS,
   AGS_SCOPES,
@@ -82,6 +83,8 @@ import {
 const LAUNCH_TTL_MS = 5 * 60 * 1000;
 /** How long a teacher may take to pick content in the tool after the Deep Linking launch. */
 const DEEP_LINK_TTL_MS = 60 * 60 * 1000;
+/** Extra AGS line items a tool may create per resource link (each is a gradebook column). */
+const MAX_EXTRA_LINE_ITEMS = 50;
 const allowHttp = !config.isProd;
 
 const zTool = z.object({
@@ -846,14 +849,48 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     ...(activity.availableUntil ? { endDateTime: activity.availableUntil.toISOString() } : {}),
   });
 
+  /** Extra line items of a link with their gradebook columns. */
+  const extraItems = (tx: DB, activityId: string) =>
+    tx
+      .select({ line: ltiLineItems, item: gradeItems })
+      .from(ltiLineItems)
+      .innerJoin(gradeItems, eq(gradeItems.id, ltiLineItems.gradeItemId))
+      .where(eq(ltiLineItems.activityId, activityId))
+      .orderBy(asc(ltiLineItems.createdAt));
+
+  const extraOf = (urls: Awaited<ReturnType<typeof orgInfo>>["urls"], activityId: string, x: Awaited<ReturnType<typeof extraItems>>[number]) => ({
+    id: `${urls.lineItemsUrl(activityId)}/${x.line.id}`,
+    scoreMaximum: x.item.gradeMax,
+    label: x.item.name,
+    resourceLinkId: activityId,
+    ...(x.line.resourceId ? { resourceId: x.line.resourceId } : {}),
+    ...(x.line.tag ? { tag: x.line.tag } : {}),
+  });
+
+  /**
+   * The grade target of a service call: the link's own line item (`lineItemId` absent) or one
+   * of its extra line items. Returns the gradebook item and its maximum.
+   */
+  const lineItemTarget = async (tx: DB, token: AccessToken, activityId: string, lineItemId?: string) => {
+    const row = await serviceLink(tx, token, activityId);
+    if (!lineItemId) {
+      if (row.link.gradeMax === null) throw notFound("Line item");
+      return { row, itemId: undefined, gradeMax: row.link.gradeMax, cacheKey: activityId };
+    }
+    const [x] = (await extraItems(tx, activityId)).filter((e) => e.line.id === lineItemId);
+    if (!x) throw notFound("Line item");
+    return { row, itemId: x.item.id, gradeMax: x.item.gradeMax, cacheKey: `${activityId}:${lineItemId}`, extra: x };
+  };
+
   app.get(
     "/ags/:activityId/lineitems",
     {
       config: { tenant: false },
       schema: {
         tags: ["LTI"],
-        summary: "AGS line item container (one line item per graded link)",
+        summary: "AGS line item container: the link's line item and any extra ones the tool created",
         params: z.object({ activityId: zId }),
+        querystring: z.object({ resource_id: z.string().max(200).optional(), tag: z.string().max(200).optional(), limit: z.coerce.number().int().min(1).max(1000).default(1000) }),
         response: { 200: z.array(zLineItem) },
       },
     },
@@ -861,9 +898,14 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
       const token = serviceToken(req, [SCOPES.lineItem, SCOPES.lineItemReadonly, SCOPES.score]);
       const items = await withTenant(token.o, async (tx) => {
         const row = await serviceLink(tx, token, req.params.activityId);
-        if (row.link.gradeMax === null) return [];
         const { urls } = await orgInfo(tx, token.o);
-        return [lineItemOf(urls, row.activity, row.link.gradeMax)];
+        const all: z.infer<typeof zLineItem>[] = [
+          ...(row.link.gradeMax === null ? [] : [lineItemOf(urls, row.activity, row.link.gradeMax)]),
+          ...(await extraItems(tx, row.activity.id)).map((x) => extraOf(urls, row.activity.id, x)),
+        ];
+        return all
+          .filter((i) => (req.query.resource_id === undefined || i.resourceId === req.query.resource_id) && (req.query.tag === undefined || i.tag === req.query.tag))
+          .slice(0, req.query.limit);
       });
       return reply.type(MEDIA.lineItemContainer).send(items);
     },
@@ -922,7 +964,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
       config: { tenant: false, rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["LTI"],
-        summary: "AGS: create the link's line item (one per resource link)",
+        summary: "AGS: create a line item (the link's own one first, then extra gradebook columns)",
         params: z.object({ activityId: zId }),
         body: zLineItemInput,
         response: { 201: zLineItem },
@@ -930,8 +972,117 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     },
     async (req, reply) => {
       const token = serviceToken(req, [SCOPES.lineItem]);
-      const item = await saveLineItem(token, req.params.activityId, req.body, "create");
+      const body = req.body;
+      if (body.resourceLinkId && body.resourceLinkId !== req.params.activityId) throw badRequest("Line items can only belong to this resource link");
+      const primaryMissing = await withTenant(token.o, async (tx) => (await serviceLink(tx, token, req.params.activityId)).link.gradeMax === null);
+      if (primaryMissing) {
+        const item = await saveLineItem(token, req.params.activityId, body, "create");
+        return reply.status(201).type(MEDIA.lineItem).send(item);
+      }
+      const item = await withTenant(token.o, async (tx) => {
+        const row = await serviceLink(tx, token, req.params.activityId);
+        if ((await extraItems(tx, row.activity.id)).length >= MAX_EXTRA_LINE_ITEMS) throw conflict(`A resource link can have at most ${MAX_EXTRA_LINE_ITEMS} extra line items`);
+        const root = await rootCategory(tx, row.course);
+        const [{ pos }] = (await tx
+          .select({ pos: sql<number | null>`max(${gradeItems.position})` })
+          .from(gradeItems)
+          .where(eq(gradeItems.courseId, row.course.id))) as [{ pos: number | null }];
+        const [gi] = await tx
+          .insert(gradeItems)
+          .values({
+            organizationId: token.o,
+            courseId: row.course.id,
+            categoryId: root.id,
+            type: "manual",
+            name: body.label,
+            gradeMax: body.scoreMaximum,
+            gradePass: null,
+            position: (pos ?? -1) + 1,
+            hidden: !row.activity.visible,
+          })
+          .returning();
+        const [line] = await tx
+          .insert(ltiLineItems)
+          .values({ organizationId: token.o, activityId: row.activity.id, gradeItemId: gi!.id, resourceId: body.resourceId ?? null, tag: body.tag ?? null })
+          .returning();
+        await tx.insert(auditLogs).values({
+          organizationId: token.o,
+          actorId: null,
+          action: "lti.lineitem_created",
+          targetType: "activity",
+          targetId: row.activity.id,
+          metadata: { toolId: token.t, lineItemId: line!.id, scoreMaximum: body.scoreMaximum, label: body.label },
+        });
+        const { urls } = await orgInfo(tx, token.o);
+        return extraOf(urls, row.activity.id, { line: line!, item: gi! });
+      });
       return reply.status(201).type(MEDIA.lineItem).send(item);
+    },
+  );
+
+  const lineItemParams = z.object({ activityId: zId, lineItemId: zId });
+
+  app.get(
+    "/ags/:activityId/lineitems/:lineItemId",
+    {
+      config: { tenant: false },
+      schema: { tags: ["LTI"], summary: "AGS: an extra line item", params: lineItemParams, response: { 200: zLineItem } },
+    },
+    async (req, reply) => {
+      const token = serviceToken(req, [SCOPES.lineItem, SCOPES.lineItemReadonly, SCOPES.score]);
+      const item = await withTenant(token.o, async (tx) => {
+        const t = await lineItemTarget(tx, token, req.params.activityId, req.params.lineItemId);
+        const { urls } = await orgInfo(tx, token.o);
+        return extraOf(urls, req.params.activityId, t.extra!);
+      });
+      return reply.type(MEDIA.lineItem).send(item);
+    },
+  );
+
+  app.put(
+    "/ags/:activityId/lineitems/:lineItemId",
+    {
+      config: { tenant: false, rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: { tags: ["LTI"], summary: "AGS: update an extra line item", params: lineItemParams, body: zLineItemInput, response: { 200: zLineItem } },
+    },
+    async (req, reply) => {
+      const token = serviceToken(req, [SCOPES.lineItem]);
+      const item = await withTenant(token.o, async (tx) => {
+        const t = await lineItemTarget(tx, token, req.params.activityId, req.params.lineItemId);
+        const [gi] = await tx.update(gradeItems).set({ name: req.body.label, gradeMax: req.body.scoreMaximum }).where(eq(gradeItems.id, t.itemId!)).returning();
+        const [line] = await tx
+          .update(ltiLineItems)
+          .set({ resourceId: req.body.resourceId ?? t.extra!.line.resourceId, tag: req.body.tag ?? t.extra!.line.tag })
+          .where(eq(ltiLineItems.id, t.extra!.line.id))
+          .returning();
+        const { urls } = await orgInfo(tx, token.o);
+        return extraOf(urls, req.params.activityId, { line: line!, item: gi! });
+      });
+      return reply.type(MEDIA.lineItem).send(item);
+    },
+  );
+
+  app.delete(
+    "/ags/:activityId/lineitems/:lineItemId",
+    {
+      config: { tenant: false, rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: { tags: ["LTI"], summary: "AGS: delete an extra line item and its gradebook column", params: lineItemParams },
+    },
+    async (req, reply) => {
+      const token = serviceToken(req, [SCOPES.lineItem]);
+      await withTenant(token.o, async (tx) => {
+        const t = await lineItemTarget(tx, token, req.params.activityId, req.params.lineItemId);
+        await tx.delete(gradeItems).where(eq(gradeItems.id, t.itemId!)); // cascades to the line item and its grades
+        await tx.insert(auditLogs).values({
+          organizationId: token.o,
+          actorId: null,
+          action: "lti.lineitem_deleted",
+          targetType: "activity",
+          targetId: req.params.activityId,
+          metadata: { toolId: token.t, lineItemId: req.params.lineItemId },
+        });
+      });
+      return reply.status(204).send();
     },
   );
 
@@ -954,49 +1105,112 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     },
   );
 
+  const zResultsQuery = z.object({ user_id: z.string().max(200).optional(), limit: z.coerce.number().int().min(1).max(1000).default(1000) });
+  const zResults = z.array(
+    z.object({ id: z.string(), scoreOf: z.string(), userId: z.string(), resultScore: z.number().optional(), resultMaximum: z.number(), comment: z.string().optional() }),
+  );
+
+  /** AGS result service for the link's line item or one of its extra line items. */
+  const listResults = async (req: FastifyRequest, reply: FastifyReply, activityId: string, query: z.infer<typeof zResultsQuery>, lineItemId?: string) => {
+    const token = serviceToken(req, [SCOPES.result]);
+    const results = await withTenant(token.o, async (tx) => {
+      const t = await lineItemTarget(tx, token, activityId, lineItemId);
+      const { urls } = await orgInfo(tx, token.o);
+      const lineItem = lineItemId ? `${urls.lineItemsUrl(activityId)}/${lineItemId}` : urls.lineItemUrl(activityId);
+      const userFilter = query.user_id && /^[0-9a-f-]{36}$/i.test(query.user_id) ? eq(gradeGrades.userId, query.user_id) : undefined;
+      if (query.user_id && !userFilter) return [];
+      const grades = await tx
+        .select({ userId: gradeGrades.userId, finalGrade: gradeGrades.finalGrade, gradeMax: gradeItems.gradeMax, feedback: gradeGrades.feedback })
+        .from(gradeGrades)
+        .innerJoin(gradeItems, eq(gradeItems.id, gradeGrades.itemId))
+        .where(and(t.itemId ? eq(gradeItems.id, t.itemId) : eq(gradeItems.activityId, t.row.activity.id), userFilter))
+        .limit(query.limit);
+      return grades.map((g) => ({
+        id: `${lineItem}/results/${g.userId}`,
+        scoreOf: lineItem,
+        userId: g.userId,
+        ...(g.finalGrade !== null ? { resultScore: g.finalGrade } : {}),
+        resultMaximum: g.gradeMax,
+        ...(g.feedback ? { comment: g.feedback.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 10_000) } : {}),
+      }));
+    });
+    return reply.type(MEDIA.resultContainer).send(results);
+  };
+
   app.get(
     "/ags/:activityId/lineitem/results",
     {
       config: { tenant: false, rateLimit: { max: 120, timeWindow: "1 minute" } },
-      schema: {
-        tags: ["LTI"],
-        summary: "AGS result service: current gradebook results for the line item",
-        params: z.object({ activityId: zId }),
-        querystring: z.object({ user_id: z.string().max(200).optional(), limit: z.coerce.number().int().min(1).max(1000).default(1000) }),
-        response: {
-          200: z.array(
-            z.object({ id: z.string(), scoreOf: z.string(), userId: z.string(), resultScore: z.number().optional(), resultMaximum: z.number(), comment: z.string().optional() }),
-          ),
-        },
-      },
+      schema: { tags: ["LTI"], summary: "AGS result service: current gradebook results for the line item", params: z.object({ activityId: zId }), querystring: zResultsQuery, response: { 200: zResults } },
     },
-    async (req, reply) => {
-      const token = serviceToken(req, [SCOPES.result]);
-      const results = await withTenant(token.o, async (tx) => {
-        const row = await serviceLink(tx, token, req.params.activityId);
-        if (row.link.gradeMax === null) throw notFound("Line item");
-        const { urls } = await orgInfo(tx, token.o);
-        const lineItem = urls.lineItemUrl(row.activity.id);
-        const userFilter = req.query.user_id && /^[0-9a-f-]{36}$/i.test(req.query.user_id) ? eq(gradeGrades.userId, req.query.user_id) : undefined;
-        if (req.query.user_id && !userFilter) return [];
-        const grades = await tx
-          .select({ userId: gradeGrades.userId, finalGrade: gradeGrades.finalGrade, gradeMax: gradeItems.gradeMax, feedback: gradeGrades.feedback })
-          .from(gradeGrades)
-          .innerJoin(gradeItems, eq(gradeItems.id, gradeGrades.itemId))
-          .where(and(eq(gradeItems.activityId, row.activity.id), userFilter))
-          .limit(req.query.limit);
-        return grades.map((g) => ({
-          id: `${lineItem}/results/${g.userId}`,
-          scoreOf: lineItem,
-          userId: g.userId,
-          ...(g.finalGrade !== null ? { resultScore: g.finalGrade } : {}),
-          resultMaximum: g.gradeMax,
-          ...(g.feedback ? { comment: g.feedback.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 10_000) } : {}),
-        }));
-      });
-      return reply.type(MEDIA.resultContainer).send(results);
-    },
+    (req, reply) => listResults(req, reply, req.params.activityId, req.query),
   );
+
+  app.get(
+    "/ags/:activityId/lineitems/:lineItemId/results",
+    {
+      config: { tenant: false, rateLimit: { max: 120, timeWindow: "1 minute" } },
+      schema: { tags: ["LTI"], summary: "AGS result service for an extra line item", params: lineItemParams, querystring: zResultsQuery, response: { 200: zResults } },
+    },
+    (req, reply) => listResults(req, reply, req.params.activityId, req.query, req.params.lineItemId),
+  );
+
+  const zScore = z.object({
+    userId: z.string().max(200),
+    scoreGiven: z.number().min(0).max(1_000_000).nullable().optional(),
+    scoreMaximum: z.number().positive().max(1_000_000).nullable().optional(),
+    comment: z.string().max(10_000).nullable().optional(),
+    timestamp: z.string().datetime({ offset: true }),
+    activityProgress: z.enum(ACTIVITY_PROGRESS),
+    gradingProgress: z.enum(GRADING_PROGRESS),
+  });
+
+  /** AGS score publish to the link's line item or one of its extra line items. */
+  const publishScore = async (req: FastifyRequest, reply: FastifyReply, activityId: string, b: z.infer<typeof zScore>, lineItemId?: string) => {
+    const token = serviceToken(req, [SCOPES.score]);
+    if (req.headers["content-type"]?.split(";")[0]?.trim() !== MEDIA.score) {
+      throw new AppError(415, "UNSUPPORTED_MEDIA_TYPE", `Content-Type must be ${MEDIA.score}`);
+    }
+    await withTenant(token.o, async (tx) => {
+      const t = await lineItemTarget(tx, token, activityId, lineItemId);
+      const row = t.row;
+      const userId = z.string().uuid().safeParse(b.userId);
+      if (!userId.success || !(await isEnrolled(tx, row.course.id, userId.data))) throw badRequest("userId is not a member of this context");
+
+      // AGS: a score older than the last one received for this user must be ignored.
+      const tsKey = `lti:score-ts:${t.cacheKey}:${userId.data}`;
+      const last = await cache.get(tsKey);
+      const ts = new Date(b.timestamp).getTime();
+      if (last && Number(last) > ts) throw conflict("A newer score has already been received");
+      await cache.set(tsKey, String(ts), 90 * 24 * 3600);
+
+      let grade: ReturnType<typeof scoreToGrade>;
+      try {
+        grade = scoreToGrade(b, t.gradeMax);
+      } catch (err) {
+        throw badRequest(err instanceof Error ? err.message : "Invalid score");
+      }
+      const base = { organizationId: token.o, activityId: row.activity.id, courseId: row.course.id, userId: userId.data };
+      if (grade.kind !== "skip") {
+        const payload = await pushGrade(tx, {
+          organizationId: token.o,
+          activityId: row.activity.id,
+          itemId: t.itemId,
+          userId: userId.data,
+          rawGrade: grade.kind === "set" ? grade.rawGrade : null,
+          feedback: b.comment ? escapeHtml(b.comment) : undefined,
+          source: "lti",
+        });
+        if (payload) await emitInTx(tx, "grade.updated", payload);
+      }
+      // Progress on extra line items doesn't complete the activity itself.
+      if (!lineItemId) {
+        await emitInTx(tx, "lti.score", base);
+        if (isSubmission(b.activityProgress)) await emitInTx(tx, "activity.submitted", base);
+      }
+    });
+    return reply.status(204).send(null);
+  };
 
   app.post(
     "/ags/:activityId/lineitem/scores",
@@ -1006,60 +1220,26 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["LTI"],
         summary: "AGS score publish (application/vnd.ims.lis.v1.score+json)",
         params: z.object({ activityId: zId }),
-        body: z.object({
-          userId: z.string().max(200),
-          scoreGiven: z.number().min(0).max(1_000_000).nullable().optional(),
-          scoreMaximum: z.number().positive().max(1_000_000).nullable().optional(),
-          comment: z.string().max(10_000).nullable().optional(),
-          timestamp: z.string().datetime({ offset: true }),
-          activityProgress: z.enum(ACTIVITY_PROGRESS),
-          gradingProgress: z.enum(GRADING_PROGRESS),
-        }),
+        body: zScore,
         response: { 204: z.null().describe("Score accepted") },
       },
     },
-    async (req, reply) => {
-      const token = serviceToken(req, [SCOPES.score]);
-      const b = req.body;
-      if (req.headers["content-type"]?.split(";")[0]?.trim() !== MEDIA.score) {
-        throw new AppError(415, "UNSUPPORTED_MEDIA_TYPE", `Content-Type must be ${MEDIA.score}`);
-      }
-      let grade: ReturnType<typeof scoreToGrade>;
-      await withTenant(token.o, async (tx) => {
-        const row = await serviceLink(tx, token, req.params.activityId);
-        if (row.link.gradeMax === null) throw notFound("Line item");
-        const userId = z.string().uuid().safeParse(b.userId);
-        if (!userId.success || !(await isEnrolled(tx, row.course.id, userId.data))) throw badRequest("userId is not a member of this context");
+    (req, reply) => publishScore(req, reply, req.params.activityId, req.body),
+  );
 
-        // AGS: a score older than the last one received for this user must be ignored.
-        const tsKey = `lti:score-ts:${row.activity.id}:${userId.data}`;
-        const last = await cache.get(tsKey);
-        const ts = new Date(b.timestamp).getTime();
-        if (last && Number(last) > ts) throw conflict("A newer score has already been received");
-        await cache.set(tsKey, String(ts), 90 * 24 * 3600);
-
-        try {
-          grade = scoreToGrade(b, row.link.gradeMax);
-        } catch (err) {
-          throw badRequest(err instanceof Error ? err.message : "Invalid score");
-        }
-        const base = { organizationId: token.o, activityId: row.activity.id, courseId: row.course.id, userId: userId.data };
-        if (grade.kind !== "skip") {
-          const payload = await pushGrade(tx, {
-            organizationId: token.o,
-            activityId: row.activity.id,
-            userId: userId.data,
-            rawGrade: grade.kind === "set" ? grade.rawGrade : null,
-            feedback: b.comment ? escapeHtml(b.comment) : undefined,
-            source: "lti",
-          });
-          if (payload) await emitInTx(tx, "grade.updated", payload);
-        }
-        await emitInTx(tx, "lti.score", base);
-        if (isSubmission(b.activityProgress)) await emitInTx(tx, "activity.submitted", base);
-      });
-      return reply.status(204).send(null);
+  app.post(
+    "/ags/:activityId/lineitems/:lineItemId/scores",
+    {
+      config: { tenant: false, rateLimit: { max: 600, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["LTI"],
+        summary: "AGS score publish to an extra line item",
+        params: lineItemParams,
+        body: zScore,
+        response: { 204: z.null().describe("Score accepted") },
+      },
     },
+    (req, reply) => publishScore(req, reply, req.params.activityId, req.body, req.params.lineItemId),
   );
 
   // ─── Names and Role Provisioning Services (NRPS 2.0) ────────────────────
