@@ -22,12 +22,8 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 ## P1 — Soon
 
 - [ ] **Manual browser QA of every screen.** Automated E2E covers login, permissions, assignment, grading and notifications. Admin, LTI, SSO, system, search, messages and Spanish were spot-checked; the rest haven't been clicked through.
-- [ ] Unread badge on the sidebar "Messages" link (`GET /messages/unread-count` exists).
 - [ ] Native-speaker review of the Spanish translations (2,100+ keys).
-- [ ] Translate text that comes from the API: capability descriptions, notification type labels, plan names.
 - [ ] Tracing (OpenTelemetry) and log shipping. Metrics (`/metrics`) and readiness (`/ready`) are done.
-- [ ] Daily notification digest email.
-- [ ] Remove the now-unused `participantNumbers`/`blindOrder` helpers in `modules/assignment/service.ts`.
 
 ## P2 — Improvements
 
@@ -35,9 +31,8 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 - [ ] Multi-SCO SCORM packages and sequencing/navigation (only the first SCO plays today).
 - [ ] Moodle `.mbz` import of question banks, files and grade setup (structure, page/url/label/assign/forum/quiz settings import today).
 - [ ] Restore user data such as grades, submissions and forum posts from backups (it is exported but not restored).
-- [ ] Delete orphaned extracted package files when an H5P/SCORM package is replaced.
+- [ ] Delete extracted H5P/SCORM package files when the activity itself is deleted (replacing a package already cleans up).
 - [ ] Search performance for staff in very large organizations (per-course capability checks).
-- [ ] Forum reply editor autofocus. Fix the hydration-safe greeting on the dashboard.
 - [ ] Load testing (quiz attempts, gradebook, reports on large courses).
 
 ## P3 — Future scope
@@ -64,5 +59,9 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 - [x] Course- and activity-level permission override UI
 - [x] Plan limits enforced, completion re-evaluation when activity rules change
 - [x] Dependencies upgraded (zod 4, drizzle 0.45, nodemailer 10, vitest 5): **0 high/critical** vulnerabilities
-- [x] **396 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
+- [x] Sidebar unread badge for messages; daily notification digest email (per-user opt-in, `notification_digest` task)
+- [x] Spanish for API-sourced text (capability descriptions, notification types, plan names), keyed by id in the web app
+- [x] Replaced H5P/SCORM packages delete their old extracted files (durable `storage.delete_prefix` job)
+- [x] Forum reply/edit editor autofocus; hydration-safe dashboard greeting; removed deprecated `blindOrder` helpers
+- [x] **400 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
 - [x] Pushed to GitHub: `karthikeyandinstrive/noodle-lms` (`main` + `feature/initial-lms`)

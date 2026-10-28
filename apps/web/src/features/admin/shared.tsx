@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useT } from "@/lib/i18n";
+import { type Translate, useT } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -168,4 +168,9 @@ export function useSearchParam(name: string) {
     () => new URLSearchParams(window.location.search).get(name),
     () => null,
   );
+}
+
+/** Capability description in the UI language; the API's English text is the fallback. */
+export function capabilityText(t: Translate, c: { name: string; description: string }) {
+  return t(`capability.${c.name}`, c.description);
 }

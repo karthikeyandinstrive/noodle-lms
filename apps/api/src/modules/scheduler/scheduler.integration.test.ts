@@ -3,11 +3,12 @@
  */
 import { and, eq, like } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { authTokens, closeDb, eventOutbox, jobs, quizAttempts, scheduledTaskRuns, systemDb, users } from "@lms/db";
+import { authTokens, closeDb, eventOutbox, jobs, notifications, quizAttempts, scheduledTaskRuns, systemDb, users, withTenant } from "@lms/db";
 import { dispatchPendingEvents } from "../../core/events";
 import { defineJob, enqueueJob, runDueJobs } from "../../core/jobs";
+import { notify } from "../../core/notify";
 import { Client, PASSWORD, setup, type TestEnv } from "../../../test/helpers";
-import { autoFinishOverdueAttempts, claimTask, cleanup, runTask, scheduledTasks, taskNamed } from "./tasks";
+import { autoFinishOverdueAttempts, claimTask, cleanup, digestEmail, DIGEST_MAX_ITEMS, runTask, scheduledTasks, sendDailyDigests, taskNamed } from "./tasks";
 
 let env: TestEnv;
 let admin: Client;
@@ -232,5 +233,63 @@ describe("/admin/system API", () => {
     expect((await admin.req("POST", `/admin/system/failed-events/${row!.id}/retry`)).status).toBe(200);
     const [after] = await db.select().from(eventOutbox).where(eq(eventOutbox.id, row!.id));
     expect(after).toMatchObject({ attempts: 0, dispatchedAt: null });
+  });
+});
+
+describe("daily notification digest", () => {
+  const mailsTo = async (to: string) =>
+    (await (await systemDb()).select().from(jobs).where(eq(jobs.name, "email.send"))).filter((j) => (j.payload as { to: string }).to === to);
+  const ping = (title: string) =>
+    withTenant(orgId(), (tx) => notify(tx, { organizationId: orgId(), userIds: [studentId], type: "announcement", title, body: "Details", link: `/courses/${courseId}` }));
+
+  it("holds emails for digest users and sends them as one summary", async () => {
+    expect((await student.req("GET", "/notifications/delivery")).body).toEqual({ emailDigest: false });
+    await ping("Before digest");
+    expect((await student.req("PUT", "/notifications/delivery", { emailDigest: true })).body).toEqual({ emailDigest: true });
+    const before = (await mailsTo("sched@default.test")).length;
+
+    await ping("Digest one");
+    await ping("Digest two");
+    expect((await mailsTo("sched@default.test")).length).toBe(before); // nothing sent immediately
+
+    expect(await withTenant(orgId(), (tx) => sendDailyDigests(tx, orgId()))).toBe(1);
+    const sent = (await mailsTo("sched@default.test")).slice(before);
+    expect(sent).toHaveLength(1);
+    const payload = sent[0]!.payload as { subject: string; text: string };
+    expect(payload.subject).toBe("Your daily summary: 2 new notifications");
+    expect(payload.text).toContain("Digest one");
+    expect(payload.text).toContain("Digest two");
+    expect(payload.text).not.toContain("Before digest"); // switching on doesn't email older notifications
+
+    // Already digested: a second run sends nothing.
+    expect(await withTenant(orgId(), (tx) => sendDailyDigests(tx, orgId()))).toBe(0);
+  });
+
+  it("includes digest-only notifications without making them unread in the app", async () => {
+    expect((await student.req("PUT", "/notifications/preferences", { preferences: [{ type: "announcement", inApp: false, email: true }] })).status).toBe(200);
+    const unread = (await student.req("GET", "/notifications/unread-count")).body.count;
+    await ping("Email only");
+    expect((await student.req("GET", "/notifications/unread-count")).body.count).toBe(unread);
+    expect(await withTenant(orgId(), (tx) => sendDailyDigests(tx, orgId()))).toBe(1);
+    await student.req("PUT", "/notifications/preferences", { preferences: [{ type: "announcement", inApp: true, email: true }] });
+  });
+
+  it("drops waiting notifications when switched off, and emails immediately again", async () => {
+    await ping("Waiting");
+    expect((await student.req("PUT", "/notifications/delivery", { emailDigest: false })).status).toBe(200);
+    const db = await systemDb();
+    const pending = await db.select().from(notifications).where(and(eq(notifications.userId, studentId), like(notifications.title, "Waiting")));
+    expect(pending[0]!.emailedAt).not.toBeNull();
+    const before = (await mailsTo("sched@default.test")).length;
+    await ping("Immediate");
+    expect((await mailsTo("sched@default.test")).length).toBe(before + 1);
+  });
+
+  it("caps the number of items listed in one email", () => {
+    const items = Array.from({ length: DIGEST_MAX_ITEMS + 3 }, (_, i) => ({ title: `N${i}`, body: null, link: null }));
+    const mail = digestEmail(items, "https://lms.test");
+    expect(mail.text).toContain("…and 3 more.");
+    expect(mail.text).not.toContain(`N${DIGEST_MAX_ITEMS}\n`);
+    expect(digestEmail(items.slice(0, 1), "https://lms.test").subject).toBe("Your daily summary: 1 new notification");
   });
 });

@@ -48,14 +48,6 @@ export function submissionState(
   return { canEdit: true, canSubmit: input.status !== "submitted", reason: null };
 }
 
-/**
- * Stable, opaque ordering of participants.
- * @deprecated Positions shift when enrolments change; use participantNumbersFor.
- */
-export function blindOrder(ids: string[], hash: (s: string) => string) {
-  return [...ids].sort((a, b) => (hash(a) < hash(b) ? -1 : hash(a) > hash(b) ? 1 : 0));
-}
-
 export const PARTICIPANT_NUMBER_MIN = 1000;
 export const PARTICIPANT_NUMBER_MAX = 9999;
 const SPAN = PARTICIPANT_NUMBER_MAX - PARTICIPANT_NUMBER_MIN + 1;

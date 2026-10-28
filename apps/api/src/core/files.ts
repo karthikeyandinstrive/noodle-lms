@@ -1,8 +1,9 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { FastifyRequest } from "fastify";
-import { files, type DB } from "@lms/db";
+import { files, withTenant, type DB } from "@lms/db";
 import { sha256 } from "./crypto";
 import { badRequest, forbidden, must } from "./errors";
+import { defineJob, enqueueJob } from "./jobs";
 import { driverForFile, storageFor, type Provider } from "./storage";
 
 export type FileRow = typeof files.$inferSelect;
@@ -181,4 +182,24 @@ export async function assertOwnFiles(tx: DB, req: FastifyRequest, fileIds: strin
 
 export async function softDeleteFile(tx: DB, fileId: string) {
   await tx.update(files).set({ deletedAt: new Date() }).where(eq(files.id, fileId));
+}
+
+// ─── Extracted package cleanup ──────────────────────────────────────────────
+
+/** Folders that hold extracted packages: `<org>/scorm/<package>/<file>`, `<org>/interactive/h5p/<content>/<file>`. */
+const PACKAGE_PREFIX = /^[0-9a-f-]{36}\/(scorm|interactive\/h5p)\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/;
+
+defineJob<{ prefix: string }>("storage.delete_prefix", async ({ prefix }, ctx) => {
+  if (!ctx.tenantId || !prefix.startsWith(`${ctx.tenantId}/`) || !PACKAGE_PREFIX.test(prefix)) return;
+  const driver = await withTenant(ctx.tenantId, (tx) => storageFor(tx, ctx.tenantId!));
+  await driver.deletePrefix(prefix);
+});
+
+/**
+ * Deletes a replaced package's extracted files once the transaction commits.
+ * Only accepts package folders of the given organization.
+ */
+export async function queuePackageCleanup(tx: DB, organizationId: string, prefix: string) {
+  if (!prefix.startsWith(`${organizationId}/`) || !PACKAGE_PREFIX.test(prefix)) throw new Error(`Not a package folder: ${prefix}`);
+  await enqueueJob(tx, "storage.delete_prefix", { prefix }, { tenantId: organizationId });
 }

@@ -1,6 +1,6 @@
 import { and, count, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
-import { enrolments, notificationPreferences, notifications } from "@lms/db";
+import { enrolments, notificationPreferences, notifications, users } from "@lms/db";
 import { z } from "zod";
 import { audit } from "../../core/audit";
 import { requireUser } from "../../core/auth";
@@ -153,6 +153,45 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           inApp: prefOf.get(type)?.inApp ?? true,
           email: prefOf.get(type)?.email ?? true,
         }));
+      }),
+  );
+
+  const zDelivery = z.object({ emailDigest: z.boolean() });
+
+  app.get(
+    "/delivery",
+    { schema: { tags: ["Notifications"], summary: "How my notification emails are delivered", response: { 200: zDelivery } } },
+    (req) =>
+      req.tenant(async (tx) => {
+        const me = requireUser(req);
+        const [row] = await tx.select({ emailDigest: users.emailDigest }).from(users).where(eq(users.id, me.id));
+        return { emailDigest: row?.emailDigest ?? false };
+      }),
+  );
+
+  app.put(
+    "/delivery",
+    {
+      schema: {
+        tags: ["Notifications"],
+        summary: "Choose one email per notification, or one daily digest email",
+        body: zDelivery,
+        response: { 200: zDelivery },
+      },
+    },
+    (req) =>
+      req.tenant(async (tx) => {
+        const me = requireUser(req);
+        const [current] = await tx.select({ emailDigest: users.emailDigest }).from(users).where(eq(users.id, me.id));
+        if (current?.emailDigest !== req.body.emailDigest) {
+          await tx.update(users).set({ emailDigest: req.body.emailDigest }).where(eq(users.id, me.id));
+          // Start fresh on a change: switching on doesn't email old notifications, switching off drops what was waiting.
+          await tx
+            .update(notifications)
+            .set({ emailedAt: new Date() })
+            .where(and(eq(notifications.userId, me.id), isNull(notifications.emailedAt)));
+        }
+        return { emailDigest: req.body.emailDigest };
       }),
   );
 

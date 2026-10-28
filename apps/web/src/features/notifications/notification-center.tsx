@@ -19,6 +19,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState, QueryState } from "@/components/common";
@@ -233,7 +234,8 @@ function Preferences() {
           {t("notifications.prefs.description", "Choose how you hear about each kind of update.")}
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-6">
+        <DigestToggle />
         <QueryState query={query}>
           {query.data && (
             <PreferencesForm
@@ -244,6 +246,43 @@ function Preferences() {
         </QueryState>
       </CardContent>
     </Card>
+  );
+}
+
+/** One email per notification, or a single daily summary email. Saved as soon as it's switched. */
+function DigestToggle() {
+  const t = useT();
+  const qc = useQueryClient();
+  const key = [...notificationsKey, "delivery"];
+  const query = useQuery({ queryKey: key, queryFn: () => api<{ emailDigest: boolean }>("/notifications/delivery") });
+  const save = useMutation({
+    mutationFn: (emailDigest: boolean) => api<{ emailDigest: boolean }>("/notifications/delivery", { method: "PUT", body: { emailDigest } }),
+    onSuccess: (data) => {
+      qc.setQueryData(key, data);
+      toast.success(
+        data.emailDigest
+          ? t("notifications.digest.on", "You'll get one summary email a day")
+          : t("notifications.digest.off", "You'll get an email for each notification"),
+      );
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
+  return (
+    <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+      <div className="space-y-0.5">
+        <Label htmlFor="email-digest">{t("notifications.digest.label", "Daily digest email")}</Label>
+        <p id="email-digest-hint" className="text-sm text-muted-foreground">
+          {t("notifications.digest.hint", "Get one email a day summarizing the notifications you've turned on for email, instead of one email each.")}
+        </p>
+      </div>
+      <Switch
+        id="email-digest"
+        aria-describedby="email-digest-hint"
+        checked={query.data?.emailDigest ?? false}
+        disabled={!query.data || save.isPending}
+        onCheckedChange={(v) => save.mutate(v)}
+      />
+    </div>
   );
 }
 
@@ -300,18 +339,18 @@ function PreferencesForm({ saved }: { saved: NotificationPreference[] }) {
           {draft.map((p) => (
             <tr key={p.type} className="border-t">
               <th scope="row" className="py-2.5 pr-3 text-left font-normal">
-                {p.label}
+                {t(`notifications.type.${p.type}`, p.label)}
               </th>
               <td className="py-2.5 text-center">
                 <Switch
-                  aria-label={t("notifications.prefs.inAppFor", "{type}: in app", { type: p.label })}
+                  aria-label={t("notifications.prefs.inAppFor", "{type}: in app", { type: t(`notifications.type.${p.type}`, p.label) })}
                   checked={p.inApp}
                   onCheckedChange={(v) => set(p.type, "inApp", v)}
                 />
               </td>
               <td className="py-2.5 text-center">
                 <Switch
-                  aria-label={t("notifications.prefs.emailFor", "{type}: email", { type: p.label })}
+                  aria-label={t("notifications.prefs.emailFor", "{type}: email", { type: t(`notifications.type.${p.type}`, p.label) })}
                   checked={p.email}
                   onCheckedChange={(v) => set(p.type, "email", v)}
                 />

@@ -15,6 +15,13 @@
       "when": 1793175984935,
       "tag": "0001_platform_identity_interop_messaging",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793198371946,
+      "tag": "0002_notification_digest",
+      "breakpoints": true
     }
   ]
 }

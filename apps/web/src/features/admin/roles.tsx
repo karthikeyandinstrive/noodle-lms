@@ -14,7 +14,7 @@ import { ErrorAlert, PageHeader, QueryState } from "@/components/common";
 import { api, errorMessage } from "@/lib/api";
 import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { ConfirmDialog, Field, NativeSelect, RequireCapability } from "./shared";
+import { capabilityText, ConfirmDialog, Field, NativeSelect, RequireCapability } from "./shared";
 import type { CapabilityDef, Permission, Role } from "./types";
 
 const rolesKey = ["roles"] as const;
@@ -134,12 +134,12 @@ function CapabilityMatrix({ role, capabilities }: { role: Role; capabilities: Ca
     for (const c of capabilities) {
       const value = c.name in draft ? draft[c.name] : (role.capabilities[c.name] ?? null);
       if (onlySet && !value) continue;
-      if (f && !c.name.toLowerCase().includes(f) && !c.description.toLowerCase().includes(f)) continue;
+      if (f && !c.name.toLowerCase().includes(f) && !capabilityText(t, c).toLowerCase().includes(f)) continue;
       const prefix = c.name.split(":")[0] ?? "other";
       groups.set(prefix, [...(groups.get(prefix) ?? []), c]);
     }
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [capabilities, filter, onlySet, draft, role.capabilities]);
+  }, [capabilities, filter, onlySet, draft, role.capabilities, t]);
 
   const changes = Object.entries(draft).filter(([cap, p]) => (role.capabilities[cap] ?? null) !== p);
   const save = useMutation({
@@ -194,7 +194,7 @@ function CapabilityMatrix({ role, capabilities }: { role: Role; capabilities: Ca
                       <Badge variant="outline">{levelLabel(c.level, t)}</Badge>
                       {changed && <span className="sr-only">{t("admin.roles.unsavedChange", "(unsaved change)")}</span>}
                     </div>
-                    <p className="text-xs text-muted-foreground">{c.description}</p>
+                    <p className="text-xs text-muted-foreground">{capabilityText(t, c)}</p>
                   </div>
                   <NativeSelect
                     aria-label={t("admin.roles.permissionFor", "{role} permission for {capability}", { role: role.name, capability: c.name })}

@@ -193,3 +193,31 @@ describe("SCORM", () => {
     expect(res.body[0]).toMatchObject({ attempts: 2, status: "failed", gradePercent: 80 });
   });
 });
+
+describe("package replacement", () => {
+  it("deletes the old package's extracted files after a new package is installed", async () => {
+    const { existsSync } = await import("node:fs");
+    const { eq } = await import("drizzle-orm");
+    const { scormPackages, systemDb } = await import("@lms/db");
+    const { runDueJobs } = await import("../../core/jobs");
+    const prefixOf = async () => (await (await systemDb()).select().from(scormPackages).where(eq(scormPackages.activityId, activityId)))[0]!.storagePrefix;
+
+    const oldPrefix = await prefixOf();
+    expect(existsSync(path.join(storageDir, oldPrefix, "sco/index.html"))).toBe(true);
+    const fileId = await upload(
+      admin,
+      "golf-v2.zip",
+      storedZip([
+        { name: "imsmanifest.xml", data: MANIFEST },
+        { name: "sco/index.html", data: "<html>v2</html>" },
+      ]),
+    );
+    expect((await admin.req("PATCH", `/activities/${activityId}`, { settings: { packageFileId: fileId } })).status).toBe(200);
+    const newPrefix = await prefixOf();
+    expect(newPrefix).not.toBe(oldPrefix);
+
+    while ((await runDueJobs(50)) > 0);
+    expect(existsSync(path.join(storageDir, oldPrefix))).toBe(false);
+    expect(existsSync(path.join(storageDir, newPrefix, "sco/index.html"))).toBe(true);
+  });
+});

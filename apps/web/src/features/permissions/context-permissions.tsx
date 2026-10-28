@@ -13,7 +13,7 @@ import { api, errorMessage } from "@/lib/api";
 import { useT, type Translate } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
-import { Field, NativeSelect, useDebounced } from "../admin/shared";
+import { capabilityText, Field, NativeSelect, useDebounced } from "../admin/shared";
 import type { CapabilityDef, Permission, Role } from "../admin/types";
 import { permissionKeys, useCapabilityDefs, useCourseParticipants, useOverrides, useRoleAssignments, useRoles, type ContextLevel, type Override } from "./api";
 
@@ -258,12 +258,12 @@ function Matrix({
       const k = cellKey(role.id, c.name);
       const v = k in draft ? draft[k] : (saved.get(k) ?? null);
       if (onlySet && !v) continue;
-      if (f && !c.name.toLowerCase().includes(f) && !c.description.toLowerCase().includes(f)) continue;
+      if (f && !c.name.toLowerCase().includes(f) && !capabilityText(t, c).toLowerCase().includes(f)) continue;
       const prefix = c.name.split(":")[0] ?? "other";
       groups.set(prefix, [...(groups.get(prefix) ?? []), c]);
     }
     return [...groups.entries()].sort(([a], [b]) => (a === preferredPrefix ? -1 : b === preferredPrefix ? 1 : a.localeCompare(b)));
-  }, [capabilities, filter, onlySet, draft, saved, role.id, preferredPrefix]);
+  }, [capabilities, filter, onlySet, draft, saved, role.id, preferredPrefix, t]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -350,7 +350,7 @@ function Matrix({
                         </Badge>
                       )}
                     </div>
-                    <p className="text-xs text-muted-foreground">{c.description}</p>
+                    <p className="text-xs text-muted-foreground">{capabilityText(t, c)}</p>
                     <p className="text-xs text-muted-foreground">{t("permissions.roleDefault", "Role default: {value}", { value: permissionLabel(t, roleDefault) })}</p>
                   </div>
                   <NativeSelect

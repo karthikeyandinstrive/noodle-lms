@@ -46,6 +46,8 @@ export const users = pgTable(
     bio: text(),
     locale: text().notNull().default("en"),
     timezone: text().notNull().default("UTC"),
+    /** Send one daily summary email instead of an email per notification. */
+    emailDigest: boolean().notNull().default(false),
     status: userStatus().notNull().default("active"),
     emailVerifiedAt: ts(),
     lastLoginAt: ts(),
@@ -318,6 +320,7 @@ export const notifications = pgTable(
     body: text(),
     link: text(),
     readAt: ts(),
+    /** Email handled (sent, queued or not wanted). Null means it's waiting for the user's daily digest. */
     emailedAt: ts(),
     createdAt: createdAt(),
   },

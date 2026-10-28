@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
-import { blindOrder, canEditSubmission, participantNumbersFor, PARTICIPANT_NUMBER_MAX, PARTICIPANT_NUMBER_MIN, isLate, isPastCutoff, lateBySeconds, submissionState } from "./rules";
+import { canEditSubmission, participantNumbersFor, PARTICIPANT_NUMBER_MAX, PARTICIPANT_NUMBER_MIN, isLate, isPastCutoff, lateBySeconds, submissionState } from "./rules";
 
 const due = new Date("2026-03-01T12:00:00Z");
 
@@ -38,13 +38,6 @@ describe("submission state", () => {
     expect(submissionState({ status: "draft", allowResubmit: true, cutoffAt: null }, now)).toMatchObject({ canEdit: true, canSubmit: true });
     expect(submissionState({ status: "submitted", allowResubmit: true, cutoffAt: null }, now)).toMatchObject({ canEdit: true, canSubmit: false });
     expect(submissionState({ status: "graded", allowResubmit: true, cutoffAt: null }, now).reason).toMatch(/graded/);
-  });
-});
-
-describe("blindOrder", () => {
-  it("is deterministic and independent of input order", () => {
-    const h = (s: string) => s.split("").reverse().join("");
-    expect(blindOrder(["ab", "ba", "cc"], h)).toEqual(blindOrder(["cc", "ab", "ba"], h));
   });
 });
 

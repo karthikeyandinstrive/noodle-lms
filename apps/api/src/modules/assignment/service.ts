@@ -15,14 +15,12 @@ import {
 } from "@lms/db";
 import { z } from "zod";
 import { registerActivityType, type ActivityRow } from "../../core/activity-types";
-import { sha256 } from "../../core/crypto";
 import { assertAllowedType, assertOwnFiles, registerFileAccess } from "../../core/files";
 import { badRequest, must } from "../../core/errors";
 import { hasCapability } from "../../core/rbac";
 import { cleanHtml } from "../../core/sanitize";
 import { zDateInput } from "../../core/schemas";
 import { loadActivity } from "../activities/service";
-import { blindOrder } from "./rules";
 
 export type AssignmentRow = typeof assignments.$inferSelect;
 export type SubmissionRow = typeof assignmentSubmissions.$inferSelect;
@@ -249,12 +247,6 @@ export async function gradersOf(tx: DB, activity: ActivityRow, courseContextId: 
     .innerJoin(roles, eq(roles.id, roleAssignments.roleId))
     .where(and(inArray(roleAssignments.contextId, [courseContextId, activity.contextId]), inArray(roles.archetype, ["editing_teacher", "teacher"])));
   return rows.map((r) => r.id);
-}
-
-/** Blind marking aliases: "Participant N", stable per assignment and opaque. */
-export function participantNumbers(assignmentId: string, userIds: string[]) {
-  const ordered = blindOrder(userIds, (id) => sha256(`${assignmentId}:${id}`));
-  return new Map(ordered.map((id, i) => [id, i + 1]));
 }
 
 export async function activityRow(tx: DB, id: string) {

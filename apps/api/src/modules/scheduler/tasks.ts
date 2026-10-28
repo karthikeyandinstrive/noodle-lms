@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNotNull, isNull, lt, lte, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, lte, or } from "drizzle-orm";
 import {
   activities,
   assignmentSubmissions,
@@ -9,6 +9,7 @@ import {
   enrolments,
   jobs,
   ltiLaunches,
+  notifications,
   organizations,
   quizAttempts,
   quizzes,
@@ -17,6 +18,7 @@ import {
   scheduledTaskRuns,
   sessions,
   systemDb,
+  users,
   videoMeetings,
   withTenant,
   type DB,
@@ -25,6 +27,7 @@ import { config } from "../../config";
 import { emitInTx, pruneOutbox } from "../../core/events";
 import { defineJob, enqueueJob, pruneJobs } from "../../core/jobs";
 import { logger } from "../../core/logger";
+import { queueMail } from "../../core/mail";
 import { notify, type NotificationType } from "../../core/notify";
 import { SUBMIT_GRACE_MS } from "../quiz/grading";
 import { closeIfOverdue } from "../quiz/service";
@@ -306,7 +309,49 @@ export async function autoFinishOverdueAttempts(now = new Date()) {
   return finished;
 }
 
-// ─── (c) Cleanup ────────────────────────────────────────────────────────────
+// ─── (c) Daily notification digest ──────────────────────────────────────────
+
+/** Most notifications listed in one digest email; the rest are summarized as a count. */
+export const DIGEST_MAX_ITEMS = 50;
+
+export function digestEmail(items: { title: string; body: string | null; link: string | null }[], appUrl: string) {
+  const shown = items.slice(0, DIGEST_MAX_ITEMS);
+  const lines = shown.map((n) => {
+    const parts = [`• ${n.title}`];
+    if (n.body) parts.push(`  ${n.body.replace(/\s+/g, " ").trim().slice(0, 300)}`);
+    if (n.link) parts.push(`  ${appUrl}${n.link}`);
+    return parts.join("\n");
+  });
+  const more = items.length - shown.length;
+  if (more > 0) lines.push(`…and ${more} more.`);
+  return {
+    subject: items.length === 1 ? "Your daily summary: 1 new notification" : `Your daily summary: ${items.length} new notifications`,
+    text: [...lines, `See all notifications: ${appUrl}/notifications`, "You get this summary because daily digest is on in your notification preferences."].join("\n\n"),
+  };
+}
+
+/** Sends one email per digest user with everything that waited since the last digest. Returns emails queued. */
+export async function sendDailyDigests(tx: DB, organizationId: string, now = new Date()) {
+  const pending = await tx
+    .select({ id: notifications.id, userId: notifications.userId, title: notifications.title, body: notifications.body, link: notifications.link, email: users.email })
+    .from(notifications)
+    .innerJoin(users, eq(users.id, notifications.userId))
+    .where(and(isNull(notifications.emailedAt), eq(users.emailDigest, true), eq(users.status, "active"), lte(notifications.createdAt, now)))
+    .orderBy(asc(notifications.userId), asc(notifications.createdAt));
+  const byUser = new Map<string, typeof pending>();
+  for (const n of pending) byUser.set(n.userId, [...(byUser.get(n.userId) ?? []), n]);
+  for (const items of byUser.values()) {
+    await queueMail(tx, organizationId, { to: items[0]!.email, ...digestEmail(items, config.APP_URL) });
+  }
+  // Marked in the same transaction as the queued email jobs, so a retry can't send twice.
+  const ids = pending.map((n) => n.id);
+  for (let i = 0; i < ids.length; i += 1000) {
+    await tx.update(notifications).set({ emailedAt: now }).where(inArray(notifications.id, ids.slice(i, i + 1000)));
+  }
+  return byUser.size;
+}
+
+// ─── (d) Cleanup ────────────────────────────────────────────────────────────
 
 export async function cleanup(now = new Date()) {
   const db = await systemDb();
@@ -325,6 +370,7 @@ export const scheduledTasks: ScheduledTask[] = [
   { name: "due_soon_reminders", intervalMs: 15 * MIN, run: (now) => forEachOrg("due_soon_reminders", (tx, org) => queueDueSoonReminders(tx, org, now)) },
   { name: "quiz_auto_finish", intervalMs: 5 * MIN, run: (now) => autoFinishOverdueAttempts(now) },
   { name: "cleanup", intervalMs: HOUR, run: (now) => cleanup(now) },
+  { name: "notification_digest", intervalMs: 24 * HOUR, run: (now) => forEachOrg("notification_digest", (tx, org) => sendDailyDigests(tx, org, now)) },
 ];
 
 /** Runs a task if due (or `force`, which still respects another replica's lock). Returns whether it ran. */

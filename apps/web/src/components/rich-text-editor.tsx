@@ -19,6 +19,7 @@ export function RichTextEditor({
   id,
   minHeight = 120,
   className,
+  autoFocus = false,
   "aria-label": ariaLabel,
 }: {
   value: string;
@@ -27,6 +28,8 @@ export function RichTextEditor({
   id?: string;
   minHeight?: number;
   className?: string;
+  /** Focus the editor (cursor at the end) once it mounts, e.g. when a reply box opens. */
+  autoFocus?: boolean;
   "aria-label"?: string;
 }) {
   const t = useT();
@@ -37,6 +40,7 @@ export function RichTextEditor({
       Link.configure({ openOnClick: false, autolink: true, protocols: ["http", "https", "mailto"], HTMLAttributes: { rel: "noopener noreferrer" } }),
     ],
     content: value,
+    autofocus: autoFocus ? "end" : false,
     editorProps: {
       attributes: {
         ...(id ? { id } : {}),

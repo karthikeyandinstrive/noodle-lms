@@ -31,7 +31,9 @@ export type NotificationType = keyof typeof NOTIFICATION_TYPES;
 
 /**
  * Creates in-app notifications (inside the caller's transaction) and queues
- * emails for recipients who have email enabled for this type.
+ * emails for recipients who have email enabled for this type. Recipients on the
+ * daily digest get no email now; their notification row stays pending
+ * (`emailedAt` null) until the digest task sends it.
  */
 export async function notify(
   tx: DB,
@@ -54,29 +56,38 @@ export async function notify(
     .where(and(inArray(notificationPreferences.userId, userIds), eq(notificationPreferences.type, input.type)));
   const prefOf = new Map(prefs.map((p) => [p.userId, p]));
 
-  const inApp = userIds.filter((id) => prefOf.get(id)?.inApp ?? true);
-  if (inApp.length) {
+  const emailIds = userIds.filter((id) => prefOf.get(id)?.email ?? true);
+  const recipients = emailIds.length
+    ? await tx
+        .select({ id: users.id, email: users.email, emailDigest: users.emailDigest })
+        .from(users)
+        .where(and(inArray(users.id, emailIds), eq(users.status, "active")))
+    : [];
+  const digest = new Set(recipients.filter((r) => r.emailDigest).map((r) => r.id));
+
+  // Digest recipients need a row for the digest to pick up, even with in-app delivery off;
+  // it's then stored as already read so it doesn't show as unread.
+  const now = new Date();
+  const rows = userIds.filter((id) => (prefOf.get(id)?.inApp ?? true) || digest.has(id));
+  if (rows.length) {
     await tx.insert(notifications).values(
-      inApp.map((userId) => ({
+      rows.map((userId) => ({
         organizationId: input.organizationId,
         userId,
         type: input.type,
         title: input.title,
         body: input.body ?? null,
         link: input.link ?? null,
+        readAt: (prefOf.get(userId)?.inApp ?? true) ? null : now,
+        emailedAt: digest.has(userId) ? null : now,
       })),
     );
   }
 
-  const emailIds = userIds.filter((id) => prefOf.get(id)?.email ?? true);
-  if (!emailIds.length) return;
   // Emails are durable jobs written in the caller's transaction: sent only if it commits.
-  const recipients = await tx
-    .select({ email: users.email })
-    .from(users)
-    .where(and(inArray(users.id, emailIds), eq(users.status, "active")));
   const link = input.link ? `${config.APP_URL}${input.link}` : undefined;
   for (const r of recipients) {
+    if (digest.has(r.id)) continue;
     await queueMail(tx, input.organizationId, {
       to: r.email,
       subject: input.title,

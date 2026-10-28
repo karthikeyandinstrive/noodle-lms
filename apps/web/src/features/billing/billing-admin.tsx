@@ -154,9 +154,9 @@ export function BillingAdmin() {
                   <Card key={p.id} className={p.id === data.plan ? "ring-2 ring-primary" : undefined}>
                     <CardHeader>
                       <CardTitle className="flex items-center gap-2">
-                        {p.name} {p.id === data.plan && <Badge variant="secondary">{t("billing.current", "Current")}</Badge>}
+                        {t(`billing.plan.${p.id}.name`, p.name)} {p.id === data.plan && <Badge variant="secondary">{t("billing.current", "Current")}</Badge>}
                       </CardTitle>
-                      <CardDescription>{p.description}</CardDescription>
+                      <CardDescription>{t(`billing.plan.${p.id}.description`, p.description)}</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <ul className="space-y-1.5 text-sm">

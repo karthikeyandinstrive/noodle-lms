@@ -59,6 +59,7 @@ import {
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
+  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
@@ -68,14 +69,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { LOCALES, type Locale, setStoredLocale, useLocale, useT } from "@/lib/i18n";
 import { meKey, useLogout, useSession } from "@/lib/session";
+import { messagingKeys } from "@/features/messaging/types";
 
-type NavItem = { href: string; key: string; label: string; icon: React.ComponentType<{ className?: string }>; capability?: string };
+type NavItem = { href: string; key: string; label: string; icon: React.ComponentType<{ className?: string }>; capability?: string; badge?: "messages" };
 
 const LEARN: NavItem[] = [
   { href: "/dashboard", key: "nav.dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/courses?mine=1", key: "nav.myCourses", label: "My courses", icon: BookOpen },
   { href: "/catalog", key: "nav.catalog", label: "Course catalog", icon: LibraryBig },
-  { href: "/messages", key: "nav.messages", label: "Messages", icon: MessageSquare },
+  { href: "/messages", key: "nav.messages", label: "Messages", icon: MessageSquare, badge: "messages" },
   { href: "/calendar", key: "nav.calendar", label: "Calendar", icon: CalendarDays },
   { href: "/grades", key: "nav.grades", label: "My grades", icon: ClipboardList },
   { href: "/achievements", key: "nav.achievements", label: "Certificates & badges", icon: Medal },
@@ -164,6 +166,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const logout = useLogout();
   const t = useT();
+  const unreadMessages = useQuery({
+    queryKey: messagingKeys.unread,
+    queryFn: () => api<{ count: number }>("/messages/unread-count").catch(() => ({ count: 0 })),
+    enabled: !!session.user,
+    refetchInterval: 60_000,
+  }).data?.count ?? 0;
 
   useEffect(() => {
     if (session.isSuccess && !session.user) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
@@ -185,13 +193,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const renderItem = (item: NavItem) => {
     const active = isActive(item.href);
+    const badge = item.badge === "messages" ? unreadMessages : 0;
     const label = t(item.key, item.label);
+    const fullLabel = badge ? t("nav.messagesUnread", "Messages ({count} unread)", { count: badge > 99 ? "99+" : badge }) : label;
     return (
       <SidebarMenuItem key={item.href}>
-        <SidebarMenuButton isActive={active} tooltip={label} render={<Link href={item.href} aria-current={active ? "page" : undefined} />}>
+        <SidebarMenuButton
+          isActive={active}
+          tooltip={fullLabel}
+          aria-label={badge ? fullLabel : undefined}
+          render={<Link href={item.href} aria-current={active ? "page" : undefined} />}
+        >
           <item.icon />
           <span>{label}</span>
         </SidebarMenuButton>
+        {!!badge && <SidebarMenuBadge aria-hidden>{badge > 99 ? "99+" : badge}</SidebarMenuBadge>}
       </SidebarMenuItem>
     );
   };

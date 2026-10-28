@@ -5,7 +5,7 @@ import { z } from "zod";
 import { registerActivityType, type ActivityRow } from "../../core/activity-types";
 import { hmac, safeEqual } from "../../core/crypto";
 import { badRequest } from "../../core/errors";
-import { assertOwnFiles, readFileBody, registerFileAccess } from "../../core/files";
+import { assertOwnFiles, queuePackageCleanup, readFileBody, registerFileAccess } from "../../core/files";
 import { hasCapability } from "../../core/rbac";
 import { zId } from "../../core/schemas";
 import { storageFor } from "../../core/storage";
@@ -154,8 +154,14 @@ export function setupInteractive() {
       const kind = s.kind ?? row.kind;
       const patch: Partial<typeof interactiveContents.$inferInsert> = { kind };
       if (s.gradeMax !== undefined) patch.gradeMax = s.gradeMax;
+      const oldPrefix = h5pInfo(row)?.prefix;
       if (kind === "embed") {
         patch.embedUrl = s.embedUrl !== undefined ? resolveEmbed(s.embedUrl) : resolveEmbed(row.embedUrl);
+        if (oldPrefix) {
+          await queuePackageCleanup(tx, activity.organizationId, oldPrefix);
+          // Forget the deleted package so switching back to H5P installs it again.
+          patch.settings = Object.fromEntries(Object.entries(row.settings ?? {}).filter(([k]) => k !== "h5p"));
+        }
       } else {
         const fileId = s.packageFileId !== undefined ? s.packageFileId : row.packageFileId;
         if (!fileId) throw badRequest("Upload an H5P package");
@@ -163,6 +169,7 @@ export function setupInteractive() {
           const h5p = await installPackage(tx, activity, userId, row.id, fileId);
           patch.packageFileId = fileId;
           patch.settings = { ...row.settings, h5p };
+          if (oldPrefix && oldPrefix !== h5p.prefix) await queuePackageCleanup(tx, activity.organizationId, oldPrefix);
         }
       }
       await tx.update(interactiveContents).set(patch).where(eq(interactiveContents.id, row.id));

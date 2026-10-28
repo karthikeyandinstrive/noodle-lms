@@ -222,7 +222,7 @@ function PostItem({
                 <Label htmlFor={`edit-${node.id}`} className="sr-only">
                   {t("forum.message", "Message")}
                 </Label>
-                <RichTextEditor id={`edit-${node.id}`} value={text} onChange={setText} minHeight={120} />
+                <RichTextEditor id={`edit-${node.id}`} value={text} onChange={setText} minHeight={120} autoFocus />
                 <div className="flex gap-2">
                   <Button type="submit" size="sm" disabled={edit.isPending || !hasText(text)}>
                     {edit.isPending ? t("common.saving", "Saving…") : t("common.save", "Save")}
@@ -275,7 +275,7 @@ function PostItem({
           }}
         >
           <Label htmlFor={`reply-${node.id}`}>{t("forum.replyTo", "Reply to {name}", { name: fullName(node.author) })}</Label>
-          <RichTextEditor id={`reply-${node.id}`} value={text} onChange={setText} minHeight={100} />
+          <RichTextEditor id={`reply-${node.id}`} value={text} onChange={setText} minHeight={100} autoFocus />
           <div className="flex gap-2">
             <Button type="submit" size="sm" disabled={reply.isPending || !hasText(text)}>
               {reply.isPending ? t("forum.posting", "Posting…") : t("forum.postReply", "Post reply")}

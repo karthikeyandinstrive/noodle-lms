@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, CalendarClock } from "lucide-react";
 import Link from "next/link";
+import { useSyncExternalStore } from "react";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState, QueryState } from "@/components/common";
@@ -17,9 +18,19 @@ import { useSession } from "@/lib/session";
 import type { Course } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-function greeting(t: Translate, name: string | undefined) {
+type DayPart = "morning" | "afternoon" | "evening";
+
+const dayPart = (): DayPart => {
   const h = new Date().getHours();
-  const part = h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
+  return h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
+};
+const noSubscribe = () => () => {};
+
+/** Time-of-day greeting. The server has no local clock, so it renders a neutral greeting and the client fills in the part of day after hydration. */
+function Greeting({ name }: { name: string | undefined }) {
+  const t = useT();
+  const part = useSyncExternalStore(noSubscribe, dayPart, () => null);
+  if (!part) return name ? t("dashboard.greeting.welcomeNamed", "Welcome, {name}", { name }) : t("dashboard.greeting.welcome", "Welcome");
   const fallback = { morning: "Good morning", afternoon: "Good afternoon", evening: "Good evening" }[part];
   return name ? t(`dashboard.greeting.${part}Named`, `${fallback}, {name}`, { name }) : t(`dashboard.greeting.${part}`, fallback);
 }
@@ -162,7 +173,7 @@ export default function DashboardPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">
-          {greeting(t, user?.firstName)}
+          <Greeting name={user?.firstName} />
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">{t("dashboard.subtitle", "Here's what's happening in your courses.")}</p>
       </div>

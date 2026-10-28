@@ -4,9 +4,11 @@ import { isIP } from "node:net";
 import path from "node:path";
 import {
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -37,6 +39,8 @@ export interface StorageDriver {
   get(key: string): Promise<Buffer>;
   head(key: string): Promise<{ size: number } | null>;
   delete(key: string): Promise<void>;
+  /** Deletes every object under `prefix/` (a "folder", e.g. an extracted package). */
+  deletePrefix(prefix: string): Promise<void>;
   test(): Promise<void>;
 }
 
@@ -85,6 +89,16 @@ export class S3Driver implements StorageDriver {
   }
   async delete(key: string) {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.cfg.bucket, Key: key }));
+  }
+  async deletePrefix(prefix: string) {
+    let token: string | undefined;
+    do {
+      const page = await this.client.send(new ListObjectsV2Command({ Bucket: this.cfg.bucket, Prefix: `${prefix}/`, ContinuationToken: token }));
+      const keys = (page.Contents ?? []).flatMap((o) => (o.Key ? [{ Key: o.Key }] : []));
+      // ListObjectsV2 returns at most 1,000 keys, which is also DeleteObjects' limit.
+      if (keys.length) await this.client.send(new DeleteObjectsCommand({ Bucket: this.cfg.bucket, Delete: { Objects: keys, Quiet: true } }));
+      token = page.IsTruncated ? page.NextContinuationToken : undefined;
+    } while (token);
   }
   async test() {
     await this.client.send(new HeadBucketCommand({ Bucket: this.cfg.bucket }));
@@ -142,6 +156,9 @@ export class LocalDriver implements StorageDriver {
   }
   async delete(key: string) {
     await rm(localPath(key), { force: true });
+  }
+  async deletePrefix(prefix: string) {
+    await rm(localPath(prefix), { recursive: true, force: true });
   }
   async test() {
     await mkdir(localRoot, { recursive: true });

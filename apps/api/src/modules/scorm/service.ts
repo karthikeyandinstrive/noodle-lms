@@ -5,7 +5,7 @@ import { z } from "zod";
 import { registerActivityType, type ActivityRow } from "../../core/activity-types";
 import { hmac, safeEqual } from "../../core/crypto";
 import { badRequest } from "../../core/errors";
-import { assertOwnFiles, readFileBody, registerFileAccess } from "../../core/files";
+import { assertOwnFiles, queuePackageCleanup, readFileBody, registerFileAccess } from "../../core/files";
 import { hasCapability } from "../../core/rbac";
 import { zId } from "../../core/schemas";
 import { storageFor } from "../../core/storage";
@@ -185,6 +185,7 @@ export function setupScorm() {
       if (s.packageFileId !== undefined && s.packageFileId !== pkg.packageFileId) {
         Object.assign(patch, await installPackage(tx, activity, userId, pkg.id, s.packageFileId));
         patch.packageFileId = s.packageFileId;
+        if (pkg.storagePrefix !== patch.storagePrefix) await queuePackageCleanup(tx, activity.organizationId, pkg.storagePrefix);
       }
       if (s.gradeMax !== undefined) patch.gradeMax = s.gradeMax;
       if (s.gradeMethod !== undefined) patch.gradeMethod = s.gradeMethod;
