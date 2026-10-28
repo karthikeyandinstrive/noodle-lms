@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import { activities, activityCompletions, createContext } from "@lms/db";
 import { z } from "zod";
-import { activityType, registeredActivityTypes, type ActivityType } from "../../core/activity-types";
+import { activityType, beforeActivitiesDeleted, registeredActivityTypes, type ActivityType } from "../../core/activity-types";
 import { requireUser } from "../../core/auth";
 import { audit } from "../../core/audit";
 import { badRequest } from "../../core/errors";
@@ -233,6 +233,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     async (req) => {
       const deleted = await req.tenant(async (tx) => {
         const { activity } = await loadActivity(tx, req, req.params.id, { capability: "activity:delete" });
+        await beforeActivitiesDeleted(tx, [activity]);
         await tx.delete(activities).where(eq(activities.id, activity.id));
         await audit(tx, req, "activity.deleted", { type: "activity", id: activity.id }, { name: activity.name, type: activity.type });
         return activity;

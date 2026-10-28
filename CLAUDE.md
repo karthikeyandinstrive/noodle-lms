@@ -80,13 +80,19 @@ e2e/                      Playwright specs + server start script
 - **Turbopack root:** `apps/web/next.config.ts` sets `turbopack.root` to the repo root (npm hoists
   deps there) and keeps the `@tailwindcss/turbopack` CSS loader. Don't remove either.
 - Uploads are restricted to an allow-listed set of MIME types in `core/files.ts`.
+- **Data outside the database** (extracted packages in storage) is cleaned up by the activity type's
+  `remove` hook, which runs before an activity or its course is deleted. Use `queuePackageCleanup`.
+- **Permission checks in loops**: call `prefetchCapabilities(tx, req, caps, contextIds)` first.
+  It fills the request's capability cache in a few queries, so the `hasCapability` calls after it are free.
+- **SCORM**: single-SCO packages keep the CMI on `scorm_attempts`; multi-SCO packages use
+  `scorm_sco_tracks` (one row per SCO), and the attempt row then holds the rolled-up result.
 - Missing **or forbidden** resources return 404, so their existence isn't leaked. Keep that pattern.
 
 ## Current state (2026-10-28)
 
 - Branch `feature/initial-lms` is pushed to https://github.com/karthikeyandinstrive/noodle-lms
   (`main` holds only the Create Next App scaffold). **The PR is not opened yet**; opening it runs CI.
-- 400 unit/integration tests and 8 E2E tests pass. Typecheck, lint and the production build are clean.
+- 411 unit/integration tests and 8 E2E tests pass. Typecheck, lint and the production build are clean.
   `npm audit` reports no high or critical findings.
 - **Never tested against real services:** PostgreSQL 16 (only PGlite so far), the Docker Compose
   stack, Stripe/Razorpay, real SSO IdPs, real LTI tools/SCORM packages, the H5P player.

@@ -191,7 +191,7 @@ function View({ activity }: ActivityViewProps) {
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2 text-sm">
         <Badge variant="outline">SCORM {s.version}</Badge>
-        {s.multiSco && <Badge variant="secondary">{t("scorm.multiScoBadge", "{n} SCOs · first one played", { n: s.scoCount ?? 2 })}</Badge>}
+        {s.multiSco && <Badge variant="secondary">{t("scorm.scoCount", "{n} lessons", { n: s.scoCount ?? 2 })}</Badge>}
       </div>
       {(canAttempt || canEdit) && <MyAttemptsCard activityId={activity.id} canEdit={canEdit} />}
       {canReport && <ReportTable activityId={activity.id} />}

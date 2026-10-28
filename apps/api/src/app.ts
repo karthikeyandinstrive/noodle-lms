@@ -50,6 +50,7 @@ export async function buildApp() {
     timeWindow: "1 minute",
     ...(redis ? { redis } : {}),
     keyGenerator: (req) => req.ip,
+    allowList: config.RATE_LIMIT_ALLOWLIST.split(",").map((s) => s.trim()).filter(Boolean),
   });
 
   // ─── API documentation (OpenAPI 3 generated from Zod schemas) ──────────

@@ -106,6 +106,7 @@ export function RestorePage() {
   const [fullname, setFullname] = useState("");
   const [shortname, setShortname] = useState("");
   const [restoreEnrolments, setRestoreEnrolments] = useState(false);
+  const [restoreUserData, setRestoreUserData] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(focusId);
   const canRestore = session.can("course:restore");
 
@@ -126,6 +127,7 @@ export function RestorePage() {
           fullname: fullname.trim() || undefined,
           shortname: shortname.trim() || undefined,
           restoreEnrolments,
+          restoreUserData: restoreEnrolments && restoreUserData,
         },
       }),
     onSuccess: (r) => {
@@ -193,7 +195,21 @@ export function RestorePage() {
               <div className="grid gap-0.5">
                 <Label htmlFor="restore-enrol">{t("restore.enrolments", "Restore enrolments")}</Label>
                 <p className="text-xs text-muted-foreground">
-                  {t("restore.enrolmentsHelp", "Only for backups with user data: enrols people who already have an account with the same email here. Grades and submissions are not restored.")}
+                  {t("restore.enrolmentsHelp", "Only for backups with user data: enrols people who already have an account with the same email here.")}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2 pl-6 sm:col-span-2">
+              <Checkbox
+                id="restore-user-data"
+                checked={restoreEnrolments && restoreUserData}
+                disabled={!restoreEnrolments}
+                onCheckedChange={(v) => setRestoreUserData(!!v)}
+              />
+              <div className="grid gap-0.5">
+                <Label htmlFor="restore-user-data">{t("restore.userData", "Restore user data")}</Label>
+                <p className="text-xs text-muted-foreground">
+                  {t("restore.userDataHelp", "For those people: group membership, grades, assignment submissions and forum posts. You are recorded as the grader. Records of people without an account here are skipped.")}
                 </p>
               </div>
             </div>

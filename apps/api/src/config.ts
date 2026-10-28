@@ -16,6 +16,8 @@ const schema = z.object({
   /** Extra allowed origins (comma separated), e.g. a mobile web-view origin. */
   ALLOWED_ORIGINS: z.string().default(""),
   TRUST_PROXY: bool,
+  /** Comma-separated client IPs exempt from rate limiting (load-test runners, internal health checks). */
+  RATE_LIMIT_ALLOWLIST: z.string().default(""),
 
   /** Base domain for SaaS subdomains: <slug>.BASE_DOMAIN */
   BASE_DOMAIN: z.string().default("localhost"),

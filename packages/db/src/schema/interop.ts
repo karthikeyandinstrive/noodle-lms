@@ -32,6 +32,8 @@ export const ltiTools = pgTable("lti_tools", {
   loginUrl: text().notNull(),
   /** Default target link URI (launch URL). */
   launchUrl: text().notNull(),
+  /** Where Deep Linking requests go (content selection); the launch URL when empty. */
+  deepLinkingUrl: text(),
   /** Tool's JWKS URL (for verifying its service-token assertions and deep linking responses). */
   jwksUrl: text().notNull(),
   /** Allowed redirect URIs. */
@@ -77,9 +79,13 @@ export const ltiLaunches = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     /** Value passed as lti_message_hint, single use. */
     hint: text().notNull().unique(),
+    /** LtiResourceLinkRequest, or LtiDeepLinkingRequest when a teacher picks content in the tool. */
+    messageType: text().notNull().default("LtiResourceLinkRequest"),
     nonce: text(),
     expiresAt: ts().notNull(),
     usedAt: ts(),
+    /** Deep Linking: when the tool's response was accepted (single use). */
+    completedAt: ts(),
     createdAt: createdAt(),
   },
   (t) => [index("lti_launches_expires_idx").on(t.expiresAt)],
@@ -134,6 +140,30 @@ export const scormAttempts = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex("scorm_attempts_uq").on(t.packageId, t.userId, t.attempt)],
+);
+
+/**
+ * Per-SCO tracking for packages with several SCOs. The attempt row then holds the
+ * aggregate (status, score, time) across them; single-SCO packages keep the CMI on the attempt.
+ */
+export const scormScoTracks = pgTable(
+  "scorm_sco_tracks",
+  {
+    id: id(),
+    organizationId: orgId().references(() => organizations.id, { onDelete: "cascade" }),
+    attemptId: uuid()
+      .notNull()
+      .references(() => scormAttempts.id, { onDelete: "cascade" }),
+    /** Manifest item identifier of the SCO. */
+    scoId: text().notNull(),
+    cmi: jsonb().$type<Record<string, string>>().notNull().default({}),
+    status: text().notNull().default("not attempted"),
+    scoreRaw: numeric({ mode: "number" }),
+    scoreMax: numeric({ mode: "number" }),
+    totalTimeSeconds: integer().notNull().default(0),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("scorm_sco_tracks_uq").on(t.attemptId, t.scoId)],
 );
 
 // ─── Course backup / restore ────────────────────────────────────────────────

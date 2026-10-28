@@ -3,6 +3,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import {
   activities,
+  auditLogs,
   courses,
   enrolments,
   getSystemContext,
@@ -32,7 +33,7 @@ import { ok, zDate, zId, zOk, patchSchema } from "../../core/schemas";
 import type { SessionUser } from "../../core/types";
 import { loadActivity } from "../activities/service";
 import { isEnrolled } from "../courses/service";
-import { pushGrade } from "../gradebook/service";
+import { pushGrade, syncActivityGradeItem } from "../gradebook/service";
 import {
   ACTIVITY_PROGRESS,
   AGS_SCOPES,
@@ -44,7 +45,9 @@ import {
   formPageCsp,
   GRADING_PROGRESS,
   isSubmission,
+  LTI,
   MEDIA,
+  parseDeepLinkingResponse,
   parseForm,
   rolesFor,
   rolesForArchetypes,
@@ -70,10 +73,13 @@ import {
   toolById,
   verifyAccessToken,
   verifyClientAssertion,
+  verifyToolMessage,
   type AccessToken,
 } from "./service";
 
 const LAUNCH_TTL_MS = 5 * 60 * 1000;
+/** How long a teacher may take to pick content in the tool after the Deep Linking launch. */
+const DEEP_LINK_TTL_MS = 60 * 60 * 1000;
 const allowHttp = !config.isProd;
 
 const zTool = z.object({
@@ -84,6 +90,7 @@ const zTool = z.object({
   deploymentId: z.string(),
   loginUrl: z.string(),
   launchUrl: z.string(),
+  deepLinkingUrl: z.string().nullable(),
   jwksUrl: z.string(),
   redirectUris: z.array(z.string()),
   scopes: z.array(z.string()),
@@ -98,6 +105,8 @@ const zToolInput = z.object({
   description: z.string().trim().max(2000).nullable().optional(),
   loginUrl: zUrl,
   launchUrl: zUrl,
+  /** Deep Linking (content selection) endpoint, when it differs from the launch URL. */
+  deepLinkingUrl: zUrl.nullable().optional(),
   jwksUrl: zUrl,
   redirectUris: z.array(zUrl).max(20).default([]),
   scopes: z.array(z.string().max(200)).max(10).default(SUPPORTED_SCOPES),
@@ -142,9 +151,10 @@ async function requireToolAdmin(tx: DB, req: FastifyRequest) {
   await requireCapability(tx, req, "lti:manage_tools", await systemContextId(tx, req));
 }
 
-async function validateToolUrls(t: { loginUrl?: string; launchUrl?: string; jwksUrl?: string; redirectUris?: string[] }) {
+async function validateToolUrls(t: { loginUrl?: string; launchUrl?: string; deepLinkingUrl?: string | null; jwksUrl?: string; redirectUris?: string[] }) {
   if (t.loginUrl) await assertToolUrl(t.loginUrl, "Login URL");
   if (t.launchUrl) await assertToolUrl(t.launchUrl, "Launch URL");
+  if (t.deepLinkingUrl) await assertToolUrl(t.deepLinkingUrl, "Deep Linking URL");
   if (t.jwksUrl) await assertToolUrl(t.jwksUrl, "JWKS URL");
   for (const u of t.redirectUris ?? []) assertRedirectUri(u);
 }
@@ -187,7 +197,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
   app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string", bodyLimit: 64 * 1024 }, (_req, body, done) =>
     done(null, parseForm(body as string)),
   );
-  app.addContentTypeParser(MEDIA.score, { parseAs: "string", bodyLimit: 64 * 1024 }, (_req, body, done) => {
+  app.addContentTypeParser([MEDIA.score, MEDIA.lineItem], { parseAs: "string", bodyLimit: 64 * 1024 }, (_req, body, done) => {
     try {
       done(null, JSON.parse(body as string));
     } catch {
@@ -308,6 +318,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
             deploymentId: newDeploymentId(),
             loginUrl: b.loginUrl,
             launchUrl: b.launchUrl,
+            deepLinkingUrl: b.deepLinkingUrl ?? null,
             jwksUrl: b.jwksUrl,
             redirectUris: [...new Set(redirectUris)],
             scopes: normalizeScopes(b.scopes),
@@ -338,6 +349,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         if (b.description !== undefined) patch.description = b.description;
         if (b.loginUrl !== undefined) patch.loginUrl = b.loginUrl;
         if (b.launchUrl !== undefined) patch.launchUrl = b.launchUrl;
+        if (b.deepLinkingUrl !== undefined) patch.deepLinkingUrl = b.deepLinkingUrl;
         if (b.jwksUrl !== undefined) patch.jwksUrl = b.jwksUrl;
         if (b.redirectUris !== undefined) patch.redirectUris = b.redirectUris.length ? [...new Set(b.redirectUris)] : [b.launchUrl ?? tool.launchUrl];
         if (b.scopes !== undefined) patch.scopes = normalizeScopes(b.scopes);
@@ -444,6 +456,156 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     },
   );
 
+  // ─── Deep Linking: the teacher picks content in the tool ────────────────
+
+  app.get(
+    "/:activityId/deep-link",
+    {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["LTI"],
+        summary: "Starts an LTI Deep Linking request (choose content in the tool for this activity)",
+        params: z.object({ activityId: zId }),
+      },
+    },
+    async (req, reply) => {
+      const me = requireUser(req);
+      const out = await req.tenant(async (tx) => {
+        const { activity } = await loadActivity(tx, req, req.params.activityId, { type: "lti", capability: "activity:update" });
+        const row = await linkOf(tx, activity.id);
+        if (!row) throw notFound("External tool");
+        if (!row.tool.enabled) throw badRequest("This external tool is disabled");
+        const hint = randomToken(32);
+        await tx.insert(ltiLaunches).values({
+          organizationId: req.org.id,
+          activityId: activity.id,
+          userId: me.id,
+          hint,
+          messageType: "LtiDeepLinkingRequest",
+          expiresAt: new Date(Date.now() + LAUNCH_TTL_MS),
+        });
+        const { urls } = await orgInfo(tx, req.org.id);
+        return {
+          action: row.tool.loginUrl,
+          fields: {
+            iss: urls.issuer,
+            login_hint: me.id,
+            target_link_uri: row.tool.deepLinkingUrl ?? row.tool.launchUrl,
+            lti_message_hint: hint,
+            client_id: row.tool.clientId,
+            lti_deployment_id: row.tool.deploymentId,
+          },
+        };
+      });
+      const nonce = randomToken(16);
+      return sendHtml(
+        reply,
+        200,
+        autoSubmitPage({ action: out.action, method: "POST", fields: out.fields, title: "Opening the tool to choose content", button: "Continue", nonce }),
+        formPageCsp(nonce, allowHttp),
+      );
+    },
+  );
+
+  /**
+   * The tool posts the teacher's selection back here (cross-site form post: no session cookie).
+   * Trust comes from the tool's signature plus the echoed `data`, which is the single-use launch
+   * hint of a Deep Linking request that this teacher started and whose authentication completed.
+   */
+  app.post(
+    "/deep-link/return",
+    {
+      config: { tenant: false, rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: { tags: ["LTI"], summary: "Deep Linking response (form post from the tool)", body: z.object({ JWT: z.string().max(64_000) }).partial().passthrough() },
+    },
+    async (req, reply) => {
+      const fail = (message: string, status = 400) => sendHtml(reply, status, errorPage(message), errorCsp);
+      const jwt = req.body?.JWT;
+      if (!jwt) return fail("The tool did not send a response");
+      let verified: Awaited<ReturnType<typeof verifyToolMessage>>;
+      try {
+        verified = await verifyToolMessage(jwt);
+      } catch (err) {
+        return fail(err instanceof Error ? err.message : "The tool's response could not be verified");
+      }
+      const { tool, payload } = verified;
+      const data = typeof payload[LTI.dlData] === "string" ? (payload[LTI.dlData] as string) : "";
+      if (!data) return fail("The response does not belong to a content selection request");
+
+      let result: { activityId: string; base: string; message: string | null; picked: boolean } | { error: string };
+      try {
+        result = await withTenant(tool.organizationId, async (tx) => {
+          const [launch] = await tx.select().from(ltiLaunches).where(eq(ltiLaunches.hint, data)).limit(1);
+          if (!launch || launch.messageType !== "LtiDeepLinkingRequest" || !launch.usedAt) return { error: "The response does not belong to a content selection request" };
+          if (launch.completedAt) return { error: "This selection was already saved" };
+          if (launch.usedAt.getTime() < Date.now() - DEEP_LINK_TTL_MS) return { error: "The selection took too long. Start again from the activity settings." };
+          const row = await linkOf(tx, launch.activityId);
+          if (!row || row.tool.id !== tool.id) return { error: "The response came from a different tool" };
+
+          let parsed: ReturnType<typeof parseDeepLinkingResponse>;
+          try {
+            parsed = parseDeepLinkingResponse(payload as Record<string, unknown>, { deploymentId: tool.deploymentId, data });
+          } catch (err) {
+            return { error: err instanceof Error ? err.message : "Invalid response" };
+          }
+          const [claimed] = await tx
+            .update(ltiLaunches)
+            .set({ completedAt: new Date() })
+            .where(and(eq(ltiLaunches.id, launch.id), isNull(ltiLaunches.completedAt)))
+            .returning();
+          if (!claimed) return { error: "This selection was already saved" };
+
+          const { base } = await orgInfo(tx, tool.organizationId);
+          const pick = parsed.selection;
+          if (!pick) return { activityId: launch.activityId, base, message: parsed.message, picked: false };
+          if (pick.url) await assertToolUrl(pick.url, "Content URL");
+          await tx
+            .update(ltiLinks)
+            .set({
+              targetLinkUri: pick.url ?? row.link.targetLinkUri,
+              customParams: Object.keys(pick.custom).length ? pick.custom : row.link.customParams,
+              gradeMax: pick.scoreMaximum ?? row.link.gradeMax,
+              openInNewWindow: pick.openInNewWindow,
+            })
+            .where(eq(ltiLinks.id, row.link.id));
+          let [activity] = await tx.select().from(activities).where(eq(activities.id, launch.activityId)).limit(1);
+          if (pick.title) [activity] = await tx.update(activities).set({ name: pick.title }).where(eq(activities.id, launch.activityId)).returning();
+          if (pick.scoreMaximum !== null) await syncActivityGradeItem(tx, activity!, { gradeMax: pick.scoreMaximum, gradePass: null });
+          await tx.insert(auditLogs).values({
+            organizationId: tool.organizationId,
+            actorId: launch.userId,
+            action: "lti.deep_link_saved",
+            targetType: "activity",
+            targetId: launch.activityId,
+            metadata: { toolId: tool.id, url: pick.url, title: pick.title },
+            ip: req.ip,
+            userAgent: req.headers["user-agent"]?.slice(0, 500),
+          });
+          return { activityId: launch.activityId, base, message: parsed.message, picked: true };
+        });
+      } catch (err) {
+        req.log.error({ err }, "lti deep link return failed");
+        return fail(err instanceof AppError ? err.message : "The selection could not be saved", err instanceof AppError ? 400 : 500);
+      }
+      if ("error" in result) return fail(result.error);
+      const nonce = randomToken(16);
+      const status = result.picked ? "selected" : "cancelled";
+      return sendHtml(
+        reply,
+        200,
+        autoSubmitPage({
+          action: `${result.base}/activities/${result.activityId}/edit`,
+          method: "GET",
+          fields: { deepLink: status },
+          title: result.picked ? (result.message ?? "Content selected") : (result.message ?? "Nothing was selected"),
+          button: "Back to the activity",
+          nonce,
+        }),
+        formPageCsp(nonce, allowHttp),
+      );
+    },
+  );
+
   // ─── OIDC authorization endpoint (tool → platform) ──────────────────────
 
   /**
@@ -500,8 +662,11 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
         const capReq = asCapReq({ id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, locale: user.locale, timezone: user.timezone });
         const sysCtx = await getSystemContext(tx, launch.organizationId);
+        const canEdit = await hasCapability(tx, capReq, "activity:update", activity.contextId);
+        const deepLinking = launch.messageType === "LtiDeepLinkingRequest";
+        if (deepLinking && !canEdit) return { error: "You can no longer edit this activity" };
         const roleUris = rolesFor({
-          canEdit: await hasCapability(tx, capReq, "activity:update", activity.contextId),
+          canEdit,
           canGrade: await hasCapability(tx, capReq, "activity:grade", activity.contextId),
           isSiteAdmin: await hasCapability(tx, capReq, "site:config", sysCtx.id),
         });
@@ -517,7 +682,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           roles: roleUris,
           activity: { id: activity.id, name: activity.name, description: activity.description },
           course,
-          targetLinkUri: row.link.targetLinkUri ?? row.tool.launchUrl,
+          targetLinkUri: deepLinking ? (row.tool.deepLinkingUrl ?? row.tool.launchUrl) : (row.link.targetLinkUri ?? row.tool.launchUrl),
           documentTarget: row.link.openInNewWindow ? "window" : "iframe",
           returnUrl: org.urls.returnUrl(activity.id),
           custom: substituteCustom(row.link.customParams, {
@@ -530,8 +695,9 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
             "$ResourceLink.title": activity.name,
           }),
           platform: { guid: org.id, name: org.name },
-          ags: graded && agsScopes.length ? { scopes: agsScopes, lineItemUrl: org.urls.lineItemUrl(activity.id), lineItemsUrl: org.urls.lineItemsUrl(activity.id) } : null,
-          nrps: row.tool.scopes.includes(SCOPES.memberships) ? { membershipsUrl: org.urls.membershipsUrl(activity.id) } : null,
+          ags: !deepLinking && graded && agsScopes.length ? { scopes: agsScopes, lineItemUrl: org.urls.lineItemUrl(activity.id), lineItemsUrl: org.urls.lineItemsUrl(activity.id) } : null,
+          nrps: !deepLinking && row.tool.scopes.includes(SCOPES.memberships) ? { membershipsUrl: org.urls.membershipsUrl(activity.id) } : null,
+          deepLinking: deepLinking ? { returnUrl: org.urls.deepLinkReturnUrl, data: launch.hint } : null,
         });
         return { redirectUri: p.redirect_uri!, idToken: await signJwt(tx, launch.organizationId, claims), state: p.state };
       });
@@ -655,7 +821,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (req, reply) => {
-      const token = serviceToken(req, [SCOPES.lineItemReadonly, SCOPES.score]);
+      const token = serviceToken(req, [SCOPES.lineItem, SCOPES.lineItemReadonly, SCOPES.score]);
       const items = await withTenant(token.o, async (tx) => {
         const row = await serviceLink(tx, token, req.params.activityId);
         if (row.link.gradeMax === null) return [];
@@ -673,13 +839,80 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
       schema: { tags: ["LTI"], summary: "AGS line item", params: z.object({ activityId: zId }), response: { 200: zLineItem } },
     },
     async (req, reply) => {
-      const token = serviceToken(req, [SCOPES.lineItemReadonly, SCOPES.score]);
+      const token = serviceToken(req, [SCOPES.lineItem, SCOPES.lineItemReadonly, SCOPES.score]);
       const item = await withTenant(token.o, async (tx) => {
         const row = await serviceLink(tx, token, req.params.activityId);
         if (row.link.gradeMax === null) throw notFound("Line item");
         const { urls } = await orgInfo(tx, token.o);
         return lineItemOf(urls, row.activity, row.link.gradeMax);
       });
+      return reply.type(MEDIA.lineItem).send(item);
+    },
+  );
+
+  const zLineItemInput = z.object({
+    scoreMaximum: z.number().positive().max(10_000),
+    label: z.string().trim().min(1).max(255),
+    resourceLinkId: z.string().max(200).optional(),
+    resourceId: z.string().max(200).optional(),
+    tag: z.string().max(200).optional(),
+  });
+
+  /** Sets the link's line item (one per link): its maximum becomes the activity's grade maximum. */
+  const saveLineItem = async (token: AccessToken, activityId: string, body: z.infer<typeof zLineItemInput>, mode: "create" | "update") =>
+    withTenant(token.o, async (tx) => {
+      const row = await serviceLink(tx, token, activityId);
+      if (body.resourceLinkId && body.resourceLinkId !== activityId) throw badRequest("Line items can only belong to this resource link");
+      if (mode === "create" && row.link.gradeMax !== null) throw conflict("This resource link already has its line item");
+      if (mode === "update" && row.link.gradeMax === null) throw notFound("Line item");
+      await tx.update(ltiLinks).set({ gradeMax: body.scoreMaximum }).where(eq(ltiLinks.id, row.link.id));
+      await syncActivityGradeItem(tx, row.activity, { gradeMax: body.scoreMaximum, gradePass: null });
+      await tx.insert(auditLogs).values({
+        organizationId: token.o,
+        actorId: null,
+        action: mode === "create" ? "lti.lineitem_created" : "lti.lineitem_updated",
+        targetType: "activity",
+        targetId: activityId,
+        metadata: { toolId: token.t, scoreMaximum: body.scoreMaximum, label: body.label },
+      });
+      const { urls } = await orgInfo(tx, token.o);
+      return lineItemOf(urls, row.activity, body.scoreMaximum);
+    });
+
+  app.post(
+    "/ags/:activityId/lineitems",
+    {
+      config: { tenant: false, rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["LTI"],
+        summary: "AGS: create the link's line item (one per resource link)",
+        params: z.object({ activityId: zId }),
+        body: zLineItemInput,
+        response: { 201: zLineItem },
+      },
+    },
+    async (req, reply) => {
+      const token = serviceToken(req, [SCOPES.lineItem]);
+      const item = await saveLineItem(token, req.params.activityId, req.body, "create");
+      return reply.status(201).type(MEDIA.lineItem).send(item);
+    },
+  );
+
+  app.put(
+    "/ags/:activityId/lineitem",
+    {
+      config: { tenant: false, rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["LTI"],
+        summary: "AGS: update the line item (scoreMaximum sets the activity's grade maximum)",
+        params: z.object({ activityId: zId }),
+        body: zLineItemInput,
+        response: { 200: zLineItem },
+      },
+    },
+    async (req, reply) => {
+      const token = serviceToken(req, [SCOPES.lineItem]);
+      const item = await saveLineItem(token, req.params.activityId, req.body, "update");
       return reply.type(MEDIA.lineItem).send(item);
     },
   );

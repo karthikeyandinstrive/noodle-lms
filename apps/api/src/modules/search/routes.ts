@@ -20,7 +20,7 @@ import {
 } from "@lms/db";
 import { z } from "zod";
 import { requireUser } from "../../core/auth";
-import { hasCapability } from "../../core/rbac";
+import { hasCapability, prefetchCapabilities } from "../../core/rbac";
 import { zId } from "../../core/schemas";
 import { rank, snippet, textMatch } from "./service";
 
@@ -59,6 +59,8 @@ async function viewableCourses(c: Ctx) {
       .where(and(eq(enrolments.userId, me.id), eq(enrolments.status, "active")))
       .then((r) => r.map((x) => x.course));
   }
+  // Staff may see thousands of courses: resolve the per-course checks in bulk.
+  await prefetchCapabilities(c.tx, c.req, ["course:view", "course:view_hidden"], rows.map((r) => r.contextId));
   const out: { course: typeof courses.$inferSelect; seeHidden: boolean }[] = [];
   for (const course of rows) {
     if (!(await hasCapability(c.tx, c.req, "course:view", course.contextId))) continue;
@@ -79,6 +81,7 @@ async function searchCourses(c: Ctx): Promise<Hit[]> {
     .where(textMatch(c.q, title, body))
     .orderBy(desc(rank(c.q, [...title, ...body])), courses.fullname)
     .limit(CANDIDATES);
+  if (!seeAllHidden) await prefetchCapabilities(c.tx, c.req, ["course:view_hidden"], rows.filter((r) => !r.visible).map((r) => r.contextId));
   const hits: Hit[] = [];
   for (const r of rows) {
     if (!r.visible && !seeAllHidden && !(await hasCapability(c.tx, c.req, "course:view_hidden", r.contextId))) continue;
@@ -100,6 +103,7 @@ async function searchActivities(c: Ctx, viewable: Awaited<ReturnType<typeof view
     .where(and(inArray(activities.courseId, [...byId.keys()]), textMatch(c.q, title, body)))
     .orderBy(desc(rank(c.q, [...title, ...body])), activities.name)
     .limit(CANDIDATES);
+  await prefetchCapabilities(c.tx, c.req, ["course:view"], rows.map((r) => r.activity.contextId));
   const hits: Hit[] = [];
   for (const { activity: a, sectionVisible } of rows) {
     const v = byId.get(a.courseId)!;
@@ -135,6 +139,7 @@ async function searchForums(c: Ctx, viewable: Awaited<ReturnType<typeof viewable
     .orderBy(desc(rank(c.q, [...title, ...body])), desc(forumPosts.createdAt))
     .limit(CANDIDATES * 2);
 
+  await prefetchCapabilities(c.tx, c.req, ["course:view", "forum:view", "forum:moderate"], rows.map((r) => r.activity.contextId));
   const access = new Map<string, { ok: boolean; allGroups: boolean; moderate: boolean }>();
   const myGroupsByCourse = new Map<string, Set<string>>();
   const postedIn = new Map<string, boolean>();

@@ -11,6 +11,8 @@ export type SettingsFieldsProps = {
   onChange: (value: Record<string, unknown>) => void;
   mode: "create" | "edit";
   courseId: string;
+  /** Set when editing an existing activity. */
+  activityId?: string;
 };
 
 /**

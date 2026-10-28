@@ -22,6 +22,20 @@
       "when": 1793198371946,
       "tag": "0002_notification_digest",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793202839562,
+      "tag": "0003_scorm_sco_tracks",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793203077289,
+      "tag": "0004_lti_deep_linking",
+      "breakpoints": true
     }
   ]
 }

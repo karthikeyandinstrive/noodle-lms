@@ -1,9 +1,9 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
-import { scormAttempts, users } from "@lms/db";
+import { scormAttempts, scormScoTracks, users, type DB } from "@lms/db";
 import { z } from "zod";
 import { requireUser } from "../../core/auth";
-import { conflict, forbidden, must, notFound } from "../../core/errors";
+import { badRequest, conflict, forbidden, must, notFound } from "../../core/errors";
 import { emitInTx } from "../../core/events";
 import { hasCapability } from "../../core/rbac";
 import { zDate, zId, zUserSummary } from "../../core/schemas";
@@ -23,9 +23,44 @@ import {
   type NormalizedStatus,
 } from "./cmi";
 import { entryFor, foldSessionTime, initialCmi, type SessionMode } from "./runtime";
-import { aggregateRatio, attemptsOf, contentToken, manifestOf, packageOf, packageRules, verifyContentToken, type AttemptRow } from "./service";
+import type { ScoInfo } from "./manifest";
+import {
+  aggregateRatio,
+  aggregateScos,
+  attemptsOf,
+  contentToken,
+  manifestOf,
+  packageOf,
+  packageRules,
+  scoRules,
+  scosOf,
+  verifyContentToken,
+  type AttemptRow,
+} from "./service";
 
 const activityParam = z.object({ activityId: zId });
+
+/** Content URL for a package-relative launch href (path segments encoded, query/fragment kept). */
+function contentUrlFor(activityId: string, token: string, href: string) {
+  const path = href
+    .split("/")
+    .map((seg, i, all) => (i === all.length - 1 ? seg.replace(/[^?#]+/, (p) => encodeURIComponent(p)) : encodeURIComponent(seg)))
+    .join("/");
+  return `/api/v1/scorm/${activityId}/content/${token}/${path}`;
+}
+
+async function tracksOf(tx: DB, attemptId: string) {
+  return tx.select().from(scormScoTracks).where(eq(scormScoTracks.attemptId, attemptId));
+}
+
+/** The SCO's track in an attempt, created on first use. */
+async function trackFor(tx: DB, organizationId: string, attemptId: string, scoId: string) {
+  await tx.insert(scormScoTracks).values({ organizationId, attemptId, scoId }).onConflictDoNothing();
+  const [row] = await tx.select().from(scormScoTracks).where(and(eq(scormScoTracks.attemptId, attemptId), eq(scormScoTracks.scoId, scoId))).limit(1);
+  return row!;
+}
+
+const zScoState = z.object({ identifier: z.string(), title: z.string(), status: z.string() });
 
 /**
  * Package content is served same-origin with the player page (required by the SCORM API
@@ -192,7 +227,13 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         tags: ["SCORM"],
         summary: "Start or resume an attempt; returns the initial CMI data model and the content URL",
         params: activityParam,
-        body: z.object({ newAttempt: z.boolean().default(false) }).default({ newAttempt: false }),
+        body: z
+          .object({
+            newAttempt: z.boolean().default(false),
+            /** SCO to launch (multi-SCO packages). Defaults to the first unfinished one. */
+            sco: z.string().max(255).optional(),
+          })
+          .default({ newAttempt: false }),
         response: {
           200: z.object({
             attemptId: zId.nullable(),
@@ -202,6 +243,9 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
             contentUrl: z.string(),
             cmi: z.record(z.string(), z.string()),
             multiSco: z.boolean(),
+            /** The SCO launched, and every SCO with its status in this attempt. */
+            sco: z.string(),
+            scos: z.array(zScoState),
           }),
         },
       },
@@ -217,21 +261,30 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         if (!canAttempt && !canPreview) throw forbidden("Missing capability scorm:attempt");
 
         const manifest = manifestOf(pkg);
-        const entry = pkg.entryHref;
-        const contentUrl = `/api/v1/scorm/${activity.id}/content/${contentToken(me.id, activity.id, pkg.storagePrefix)}/${entry
-          .split("/")
-          .map((seg, i, all) => (i === all.length - 1 ? seg.replace(/[^?#]+/, (p) => encodeURIComponent(p)) : encodeURIComponent(seg)))
-          .join("/")}`;
-        const base = { version: pkg.version, contentUrl, multiSco: manifest.multiSco ?? false };
+        const scos = scosOf(pkg);
+        const multiSco = scos.length > 1;
+        const requested = req.body.sco ? scos.find((x) => x.identifier === req.body.sco) : undefined;
+        if (req.body.sco && !requested) throw badRequest("Unknown SCO");
+        const token = contentToken(me.id, activity.id, pkg.storagePrefix);
+        const launchOf = (sco: ScoInfo, states: Map<string, string>) => ({
+          version: pkg.version,
+          contentUrl: contentUrlFor(activity.id, token, sco.href),
+          multiSco,
+          sco: sco.identifier,
+          scos: scos.map((x) => ({ identifier: x.identifier, title: x.title, status: states.get(x.identifier) ?? "not attempted" })),
+        });
+        // Launch settings of the SCO (mastery score, launch data …) over the package defaults.
+        const scoManifest = (sco: ScoInfo) => ({ ...manifest, ...sco });
 
         // Editors without scorm:attempt preview in browse mode: nothing is recorded.
         if (!canAttempt) {
+          const sco = requested ?? scos[0]!;
           return {
-            ...base,
+            ...launchOf(sco, new Map()),
             attemptId: null,
             attempt: null,
             mode: "browse" as const,
-            cmi: initialCmi({ version: pkg.version, stored: {}, totalSeconds: 0, entry: "ab-initio", mode: "browse", user: me, manifest }),
+            cmi: initialCmi({ version: pkg.version, stored: {}, totalSeconds: 0, entry: "ab-initio", mode: "browse", user: me, manifest: scoManifest(sco) }),
           };
         }
 
@@ -246,21 +299,45 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           current = created!;
         }
 
-        const fresh = Object.keys(current.cmi).length === 0 && current.totalTimeSeconds === 0;
-        const entryValue = entryFor(pkg.version, current.cmi, fresh);
-        // A new session: fold any session_time left by a session that never finished, clear exit.
-        const folded = foldSessionTime(pkg.version, current.cmi, current.totalTimeSeconds);
-        const { [exitKey(pkg.version)]: _exit, ...cmi } = folded.cmi;
-        if (folded.totalSeconds !== current.totalTimeSeconds || _exit !== undefined) {
-          await tx.update(scormAttempts).set({ cmi, totalTimeSeconds: folded.totalSeconds, updatedAt: new Date() }).where(eq(scormAttempts.id, current.id));
-        }
         const mode: SessionMode = "normal";
+        // A new session: fold any session_time left by a session that never finished, clear exit.
+        const resume = (stored: Cmi, totalSeconds: number) => {
+          const fresh = Object.keys(stored).length === 0 && totalSeconds === 0;
+          const entry = entryFor(pkg.version, stored, fresh);
+          const folded = foldSessionTime(pkg.version, stored, totalSeconds);
+          const { [exitKey(pkg.version)]: exit, ...cmi } = folded.cmi;
+          return { entry, cmi, totalSeconds: folded.totalSeconds, changed: folded.totalSeconds !== totalSeconds || exit !== undefined };
+        };
+
+        if (!multiSco) {
+          const r = resume(current.cmi, current.totalTimeSeconds);
+          if (r.changed) {
+            await tx.update(scormAttempts).set({ cmi: r.cmi, totalTimeSeconds: r.totalSeconds, updatedAt: new Date() }).where(eq(scormAttempts.id, current.id));
+          }
+          const sco = scos[0]!;
+          return {
+            ...launchOf(sco, new Map([[sco.identifier, current.status]])),
+            attemptId: current.id,
+            attempt: current.attempt,
+            mode,
+            cmi: initialCmi({ version: pkg.version, stored: r.cmi, totalSeconds: r.totalSeconds, entry: r.entry, mode, user: me, manifest: scoManifest(sco) }),
+          };
+        }
+
+        const states = new Map((await tracksOf(tx, current.id)).map((t) => [t.scoId, t.status]));
+        const finished = (id: string) => FINISHED.includes((states.get(id) ?? "not attempted") as NormalizedStatus);
+        const sco = requested ?? scos.find((x) => !finished(x.identifier)) ?? scos[0]!;
+        const track = await trackFor(tx, req.org.id, current.id, sco.identifier);
+        const r = resume(track.cmi, track.totalTimeSeconds);
+        if (r.changed) {
+          await tx.update(scormScoTracks).set({ cmi: r.cmi, totalTimeSeconds: r.totalSeconds, updatedAt: new Date() }).where(eq(scormScoTracks.id, track.id));
+        }
         return {
-          ...base,
+          ...launchOf(sco, states),
           attemptId: current.id,
           attempt: current.attempt,
           mode,
-          cmi: initialCmi({ version: pkg.version, stored: cmi, totalSeconds: folded.totalSeconds, entry: entryValue, mode, user: me, manifest }),
+          cmi: initialCmi({ version: pkg.version, stored: r.cmi, totalSeconds: r.totalSeconds, entry: r.entry, mode, user: me, manifest: scoManifest(sco) }),
         };
       }),
   );
@@ -276,10 +353,15 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         body: z.object({
           cmi: z.record(z.string(), z.string().max(70_000)).refine((m) => Object.keys(m).length <= 3000, "Too many elements"),
           finish: z.boolean().default(false),
+          /** The SCO the values belong to (multi-SCO packages). */
+          sco: z.string().max(255).optional(),
         }),
         response: {
           200: z.object({
+            /** Attempt status (across all SCOs). */
             status: z.string(),
+            /** Status of the committed SCO. */
+            scoStatus: z.string(),
             scoreRaw: z.number().nullable(),
             scoreMax: z.number().nullable(),
             totalTimeSeconds: z.number().int(),
@@ -307,22 +389,48 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         const problems = validateCmi(pkg.version, req.body.cmi);
         const bad = new Set(problems.map((p) => p.key));
         const accepted: Cmi = Object.fromEntries(Object.entries(req.body.cmi).filter(([k]) => !bad.has(k)));
-        let cmi = mergeCmi(pkg.version, attempt.cmi, accepted);
-        let totalSeconds = attempt.totalTimeSeconds;
-        if (req.body.finish) ({ cmi, totalSeconds } = foldSessionTime(pkg.version, cmi, totalSeconds));
+        const scos = scosOf(pkg);
+        const merge = (stored: Cmi, storedSeconds: number, rules: ReturnType<typeof packageRules>) => {
+          let cmi = mergeCmi(pkg.version, stored, accepted);
+          let totalSeconds = storedSeconds;
+          if (req.body.finish) ({ cmi, totalSeconds } = foldSessionTime(pkg.version, cmi, totalSeconds));
+          return { cmi, totalSeconds, status: computeStatus(pkg.version, cmi, rules), score: computeScore(pkg.version, cmi) };
+        };
 
-        const status = computeStatus(pkg.version, cmi, packageRules(pkg));
-        const score = computeScore(pkg.version, cmi);
-        const [saved] = await tx
-          .update(scormAttempts)
-          .set({ cmi, status, scoreRaw: score?.raw ?? null, scoreMax: score?.max ?? null, totalTimeSeconds: totalSeconds, updatedAt: new Date() })
-          .where(eq(scormAttempts.id, attempt.id))
-          .returning();
+        let saved: AttemptRow;
+        let scoStatus: string;
+        if (scos.length > 1) {
+          const sco = scos.find((x) => x.identifier === req.body.sco);
+          if (!sco) throw badRequest("Name the SCO these values belong to");
+          const track = await trackFor(tx, req.org.id, attempt.id, sco.identifier);
+          const r = merge(track.cmi, track.totalTimeSeconds, scoRules(sco));
+          await tx
+            .update(scormScoTracks)
+            .set({ cmi: r.cmi, status: r.status, scoreRaw: r.score?.raw ?? null, scoreMax: r.score?.max ?? null, totalTimeSeconds: r.totalSeconds, updatedAt: new Date() })
+            .where(eq(scormScoTracks.id, track.id));
+          scoStatus = r.status;
+          const total = aggregateScos(scos.length, await tracksOf(tx, attempt.id));
+          [saved] = (await tx
+            .update(scormAttempts)
+            .set({ status: total.status, scoreRaw: total.scoreRaw, scoreMax: total.scoreMax, totalTimeSeconds: total.totalTimeSeconds, updatedAt: new Date() })
+            .where(eq(scormAttempts.id, attempt.id))
+            .returning()) as [AttemptRow];
+        } else {
+          const r = merge(attempt.cmi, attempt.totalTimeSeconds, packageRules(pkg));
+          scoStatus = r.status;
+          [saved] = (await tx
+            .update(scormAttempts)
+            .set({ cmi: r.cmi, status: r.status, scoreRaw: r.score?.raw ?? null, scoreMax: r.score?.max ?? null, totalTimeSeconds: r.totalSeconds, updatedAt: new Date() })
+            .where(eq(scormAttempts.id, attempt.id))
+            .returning()) as [AttemptRow];
+        }
+        const status = saved.status;
+        const totalSeconds = saved.totalTimeSeconds;
 
         const base = { organizationId: req.org.id, activityId: activity.id, courseId: activity.courseId, userId: me.id };
-        const scoreChanged = (score?.raw ?? null) !== attempt.scoreRaw || (score?.max ?? null) !== attempt.scoreMax;
+        const scoreChanged = saved.scoreRaw !== attempt.scoreRaw || saved.scoreMax !== attempt.scoreMax;
         if (scoreChanged) {
-          const ratio = aggregateRatio(pkg, attempts.map((a) => (a.id === saved!.id ? saved! : a)));
+          const ratio = aggregateRatio(pkg, attempts.map((a) => (a.id === saved.id ? saved : a)));
           if (ratio !== null) {
             const grade = await pushGrade(tx, { organizationId: req.org.id, activityId: activity.id, userId: me.id, rawGrade: ratio * pkg.gradeMax, source: "scorm" });
             if (grade) await emitInTx(tx, "grade.updated", grade);
@@ -332,7 +440,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         const done = (s: string) => s === "completed" || s === "passed";
         if (done(status) && !done(attempt.status)) await emitInTx(tx, "activity.submitted", base);
 
-        return { status, scoreRaw: saved!.scoreRaw, scoreMax: saved!.scoreMax, totalTimeSeconds: totalSeconds, rejected: problems };
+        return { status, scoStatus, scoreRaw: saved.scoreRaw, scoreMax: saved.scoreMax, totalTimeSeconds: totalSeconds, rejected: problems };
       }),
   );
 

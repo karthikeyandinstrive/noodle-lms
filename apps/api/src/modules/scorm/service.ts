@@ -10,8 +10,8 @@ import { hasCapability } from "../../core/rbac";
 import { zId } from "../../core/schemas";
 import { storageFor } from "../../core/storage";
 import { listZip, readZipEntry, safeEntryPath, ZipError, type ZipEntry } from "../interactive/zip";
-import { aggregateGrade, GRADE_METHODS, ratioOf, type GradeMethod, type PackageRules } from "./cmi";
-import { ManifestError, parseManifest, splitHref, type ManifestInfo } from "./manifest";
+import { aggregateGrade, GRADE_METHODS, ratioOf, type GradeMethod, type NormalizedStatus, type PackageRules } from "./cmi";
+import { ManifestError, parseManifest, splitHref, type ManifestInfo, type ScoInfo } from "./manifest";
 
 export type PackageRow = typeof scormPackages.$inferSelect;
 export type AttemptRow = typeof scormAttempts.$inferSelect;
@@ -30,6 +30,54 @@ export const manifestOf = (pkg: PackageRow) => pkg.manifest as Partial<ManifestI
 export function packageRules(pkg: PackageRow): PackageRules {
   const m = manifestOf(pkg);
   return { masteryScore: m.masteryScore ?? null, scaledPassingScore: m.scaledPassingScore ?? null, completionThreshold: m.completionThreshold ?? null };
+}
+
+/** The package's SCOs; packages installed before per-SCO parsing get one built from the top-level fields. */
+export function scosOf(pkg: PackageRow): ScoInfo[] {
+  const m = manifestOf(pkg);
+  if (m.scos?.length) return m.scos;
+  return [
+    {
+      identifier: m.scoIdentifier ?? "sco",
+      title: m.scoTitle ?? pkg.title ?? "SCO",
+      href: pkg.entryHref,
+      masteryScore: m.masteryScore ?? null,
+      scaledPassingScore: m.scaledPassingScore ?? null,
+      completionThreshold: m.completionThreshold ?? null,
+      launchData: m.launchData ?? null,
+      maxTimeAllowed: m.maxTimeAllowed ?? null,
+      timeLimitAction: m.timeLimitAction ?? null,
+    },
+  ];
+}
+
+export const scoRules = (sco: ScoInfo): PackageRules => ({
+  masteryScore: sco.masteryScore,
+  scaledPassingScore: sco.scaledPassingScore,
+  completionThreshold: sco.completionThreshold,
+});
+
+type TrackSummary = { status: string; scoreRaw: number | null; scoreMax: number | null; totalTimeSeconds: number };
+
+/**
+ * Attempt result across the SCOs of a multi-SCO package: completed/passed only once every SCO
+ * is finished (failed if any failed); the score is the sum of SCO scores over the sum of maxima.
+ */
+export function aggregateScos(scoCount: number, tracks: TrackSummary[]): { status: NormalizedStatus; scoreRaw: number | null; scoreMax: number | null; totalTimeSeconds: number } {
+  const done = (s: string) => s === "completed" || s === "passed";
+  const finished = tracks.filter((t) => done(t.status) || t.status === "failed");
+  let status: NormalizedStatus;
+  if (!tracks.some((t) => t.status !== "not attempted")) status = "not attempted";
+  else if (finished.length < scoCount) status = "incomplete";
+  else if (finished.some((t) => t.status === "failed")) status = "failed";
+  else status = finished.every((t) => t.status === "passed") ? "passed" : "completed";
+  const scored = tracks.filter((t) => t.scoreRaw !== null && t.scoreMax !== null && t.scoreMax > 0);
+  return {
+    status,
+    scoreRaw: scored.length ? scored.reduce((sum, t) => sum + t.scoreRaw!, 0) : null,
+    scoreMax: scored.length ? scored.reduce((sum, t) => sum + t.scoreMax!, 0) : null,
+    totalTimeSeconds: tracks.reduce((sum, t) => sum + t.totalTimeSeconds, 0),
+  };
 }
 
 // ─── Package inspection (pure) ──────────────────────────────────────────────
@@ -60,10 +108,16 @@ export function inspectScorm(zip: Buffer): { manifest: ManifestInfo; files: Pack
     throw new ManifestError(err instanceof Error ? err.message : "Unreadable imsmanifest.xml");
   }
   const manifest = parseManifest(xml);
-  const { path } = splitHref(manifest.entryHref);
-  if (/^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("//")) throw new ManifestError("External launch URLs are not supported");
-  const safe = safeEntryPath(path);
-  if (!safe || !out.some((f) => f.path === safe)) throw new ManifestError(`The launch file ${path.slice(0, 200)} is not in the package`);
+  // Every SCO must launch a file inside the package; hrefs are normalized to safe package paths.
+  const safeHref = (href: string) => {
+    const { path, suffix } = splitHref(href);
+    if (/^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("//")) throw new ManifestError("External launch URLs are not supported");
+    const safe = safeEntryPath(path);
+    if (!safe || !out.some((f) => f.path === safe)) throw new ManifestError(`The launch file ${path.slice(0, 200)} is not in the package`);
+    return `${safe}${suffix}`;
+  };
+  manifest.scos = manifest.scos.map((sco) => ({ ...sco, href: safeHref(sco.href) }));
+  manifest.entryHref = safeHref(manifest.entryHref);
   return { manifest, files: out };
 }
 
@@ -102,10 +156,9 @@ async function installPackage(tx: DB, activity: ActivityRow, userId: string, pac
     .update(files)
     .set({ component: "scorm", area: "package", itemId: activity.id, contextId: activity.contextId })
     .where(eq(files.id, file.id));
-  const { path, suffix } = splitHref(inspected.manifest.entryHref);
   return {
     version: inspected.manifest.version,
-    entryHref: `${safeEntryPath(path)}${suffix}`,
+    entryHref: inspected.manifest.entryHref,
     storagePrefix: prefix,
     title: inspected.manifest.title,
     manifest: { ...inspected.manifest, fileCount: inspected.files.length } as Record<string, unknown>,
@@ -206,6 +259,10 @@ export function setupScorm() {
         scoCount: m.scoCount ?? 1,
         multiSco: m.multiSco ?? false,
       };
+    },
+    async remove(tx, activity) {
+      const pkg = await packageOf(tx, activity.id);
+      if (pkg) await queuePackageCleanup(tx, activity.organizationId, pkg.storagePrefix);
     },
     async grading(tx, activity) {
       const pkg = await packageOf(tx, activity.id);

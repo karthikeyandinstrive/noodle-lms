@@ -155,3 +155,38 @@ async function courseContextId(id: string) {
   const [row] = await db.select({ contextId: courses.contextId }).from(courses).where(eq(courses.id, id));
   return row!.contextId;
 }
+
+describe("bulk capability resolution", () => {
+  it("prefetchCapabilities gives the same answers as hasCapability", async () => {
+    const { withTenant, getSystemContext } = await import("@lms/db");
+    const { hasCapability, prefetchCapabilities } = await import("../src/core/rbac");
+    const roles = await admin.req<{ id: string; shortname: string }[]>("GET", "/roles");
+    const studentRole = roles.body.find((r) => r.shortname === "student")!;
+
+    const other = await admin.req("POST", "/courses", { fullname: "Geometry", shortname: "GEO" });
+    const ctxA = await courseContextId(courseId);
+    const ctxB = await courseContextId(other.body.id);
+    // An allow override in A and a prohibit at a parent-less context B exercise depth handling.
+    await admin.req("PUT", `/contexts/${ctxA}/overrides`, { roleId: studentRole.id, capability: "course:update", permission: "allow" });
+    await admin.req("PUT", `/contexts/${ctxB}/overrides`, { roleId: studentRole.id, capability: "course:view", permission: "prohibit" });
+
+    const caps = ["course:view", "course:update", "course:view_hidden", "forum:view", "user:view"] as const;
+    const orgId = env.orgs.default!.id;
+    for (const userId of [studentId, (await admin.req("GET", "/auth/me")).body.user.id as string]) {
+      await withTenant(orgId, async (tx) => {
+        const sys = (await getSystemContext(tx, orgId)).id;
+        const contextIds = [sys, ctxA, ctxB];
+        const single = { user: { id: userId } as never, capabilityCache: new Map<string, boolean>() };
+        const bulk = { user: { id: userId } as never, capabilityCache: new Map<string, boolean>() };
+        await prefetchCapabilities(tx, bulk, [...caps], contextIds);
+        for (const ctx of contextIds) {
+          for (const cap of caps) {
+            expect(bulk.capabilityCache.get(`${cap}@${ctx}`), `${cap}@${ctx} for ${userId}`).toBe(await hasCapability(tx, single, cap, ctx));
+          }
+        }
+      });
+    }
+    await admin.req("PUT", `/contexts/${ctxA}/overrides`, { roleId: studentRole.id, capability: "course:update", permission: null });
+    await admin.req("PUT", `/contexts/${ctxB}/overrides`, { roleId: studentRole.id, capability: "course:view", permission: null });
+  });
+});

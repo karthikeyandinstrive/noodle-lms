@@ -20,6 +20,7 @@ import {
 } from "@lms/db";
 import { z } from "zod";
 import { requireUser } from "../../core/auth";
+import { beforeActivitiesDeleted } from "../../core/activity-types";
 import { audit } from "../../core/audit";
 import { badRequest, forbidden, must, notFound } from "../../core/errors";
 import { emit } from "../../core/events";
@@ -356,6 +357,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     async (req) => {
       await req.tenant(async (tx) => {
         const course = await loadCourseWith(tx, req, req.params.courseId, "course:delete");
+        await beforeActivitiesDeleted(tx, await tx.select().from(activities).where(eq(activities.courseId, course.id)));
         await tx.delete(courses).where(eq(courses.id, course.id));
         await audit(tx, req, "course.deleted", { type: "course", id: course.id }, { shortname: course.shortname });
       });

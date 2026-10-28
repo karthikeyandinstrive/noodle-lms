@@ -248,6 +248,66 @@ export const zBackupCourse = z.object({
       enrolments: z
         .array(z.object({ userId: zIdish, status: z.string().max(20), method: z.string().max(20), roles: z.array(z.string().max(50)).max(20), timeStart: zNullStr, timeEnd: zNullStr }))
         .max(200_000),
+      groupMembers: z.array(z.object({ groupId: zIdish, userId: zIdish })).max(500_000).default([]),
+      grades: z
+        .array(
+          z.object({
+            itemId: zIdish,
+            userId: zIdish,
+            rawGrade: z.number().nullable().default(null),
+            finalGrade: z.number().nullable().default(null),
+            overridden: z.boolean().default(false),
+            feedback: zNullStr.default(null),
+          }),
+        )
+        .max(2_000_000)
+        .default([]),
+      submissions: z
+        .array(
+          z.object({
+            activityId: zIdish,
+            userId: zIdish,
+            attempt: z.number().int().min(1).max(1000).default(1),
+            status: z.string().max(20),
+            text: zNullStr.default(null),
+            submittedAt: zNullStr.default(null),
+            late: z.boolean().default(false),
+            fileIds: z.array(zIdish).max(100).default([]),
+            grade: z.number().nullable().default(null),
+            feedback: zNullStr.default(null),
+          }),
+        )
+        .max(1_000_000)
+        .default([]),
+      forumDiscussions: z
+        .array(
+          z.object({
+            id: zIdish,
+            activityId: zIdish,
+            userId: zIdish,
+            groupId: z.string().max(100).nullable().default(null),
+            title: z.string().max(500),
+            pinned: z.boolean().default(false),
+            locked: z.boolean().default(false),
+            createdAt: z.string().max(100),
+          }),
+        )
+        .max(500_000)
+        .default([]),
+      forumPosts: z
+        .array(
+          z.object({
+            id: zIdish,
+            discussionId: zIdish,
+            parentId: z.string().max(100).nullable().default(null),
+            userId: zIdish,
+            message: zStr,
+            createdAt: z.string().max(100),
+            deleted: z.boolean().default(false),
+          }),
+        )
+        .max(2_000_000)
+        .default([]),
     })
     .passthrough()
     .optional(),

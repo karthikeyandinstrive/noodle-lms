@@ -1,6 +1,8 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   activities,
+  assignmentFeedback,
+  assignmentSubmissions,
   assignments,
   attendances,
   attendanceSessions,
@@ -13,10 +15,14 @@ import {
   courses,
   createContext,
   files,
+  forumDiscussions,
+  forumPosts,
   forums,
   getSystemContext,
   gradeCategories,
+  gradeGrades,
   gradeItems,
+  groupMembers,
   groups,
   interactiveContents,
   ltiLinks,
@@ -25,6 +31,7 @@ import {
   questions,
   questionVersions,
   quizSlots,
+  submissionFiles,
   quizzes,
   scormPackages,
   users,
@@ -40,7 +47,7 @@ import { cleanHtml } from "../../core/sanitize";
 import { zElement } from "../certificate/service";
 import { normalizeExternalUrl, parseOptions, type FileOptions, type UrlOptions } from "../content/options";
 import { enrolUser, ENROLABLE_ROLES, type EnrolRole } from "../courses/service";
-import { ensureCourseGradebook, syncActivityGradeItem } from "../gradebook/service";
+import { ensureCourseGradebook, recalculateCourseTotals, syncActivityGradeItem } from "../gradebook/service";
 import { DATA_SCHEMAS, QUESTION_TYPES, type QuestionType } from "../quiz/question-types";
 import { fileIdsInHtml } from "./export";
 import type { ParsedBackupCourse, RestoreReport } from "./format";
@@ -179,6 +186,8 @@ export type RestoreInput = {
   shortname?: string | null;
   /** Enrol users found by email in this organization (from the backup's user data). */
   restoreEnrolments?: boolean;
+  /** Also restore those users' group membership, grades, assignment submissions and forum posts (needs `restoreEnrolments`). */
+  restoreUserData?: boolean;
   report: RestoreReport;
 };
 
@@ -227,7 +236,7 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
   // ─── Files (lazy: stored on first use, tagged for that use) ────────────────
   const fileEntries = new Map(backup.files.map((f) => [f.id.toLowerCase(), f]));
   const fileMap = new Map<string, string>();
-  type Tag = { component: string; area: string; itemId?: string | null; contextId?: string | null };
+  type Tag = { component: string; area: string; itemId?: string | null; contextId?: string | null; ownerId?: string };
   const restoreFile = async (oldId: unknown, tag: Tag): Promise<string | null> => {
     if (typeof oldId !== "string" || !oldId) return null;
     const key = oldId.toLowerCase();
@@ -237,7 +246,7 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
     if (!entry || !body) return null;
     const stored = await storeBuffer(tx, organizationId, {
       ...tag,
-      ownerId: userId,
+      ownerId: tag.ownerId ?? userId,
       filename: entry.filename,
       mimeType: entry.mimeType || "application/octet-stream",
       body,
@@ -738,9 +747,10 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
           .where(and(inArray(sql`lower(${users.email})`, emails), isNull(users.deletedAt)))
       : [];
     const localByEmail = new Map(local.map((u) => [u.email.toLowerCase(), u.id]));
+    const localOf = (backupUserId: string) => localByEmail.get(emailOf.get(backupUserId) ?? "");
     let skipped = 0;
     for (const e of backup.userData.enrolments) {
-      const localId = localByEmail.get(emailOf.get(e.userId) ?? "");
+      const localId = localOf(e.userId);
       if (!localId) {
         skipped++;
         continue;
@@ -753,8 +763,13 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
       bump(report, "enrolments");
     }
     if (skipped) warn(`${skipped} enrolment(s) were skipped: no user with that email in this organization`);
+    if (input.restoreUserData) {
+      await restoreUserData(tx, { organizationId, courseId, restorer: userId, userData: backup.userData, localOf, activityMap, itemMap, groupMap, restoreFile, html, report });
+    } else if (hasUserActivity(backup.userData)) {
+      report.unsupported.push("User data (grades, submissions, forum posts) was not restored: choose \"Restore user data\" to include it");
+    }
   } else if (backup.userData) {
-    report.unsupported.push("User data (grades, submissions, forum posts) is not restored into a new course");
+    report.unsupported.push("User data (grades, submissions, forum posts) is only restored together with enrolments");
   }
 
   await emitInTx(tx, "course.created", { organizationId, courseId, userId });
@@ -768,4 +783,206 @@ async function fileExists(tx: DB, id: string) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return false;
   const [f] = await tx.select({ id: files.id }).from(files).where(and(eq(files.id, id), isNull(files.deletedAt))).limit(1);
   return !!f;
+}
+
+// ─── User data ───────────────────────────────────────────────────────────────
+
+type UserData = NonNullable<ParsedBackupCourse["userData"]>;
+
+const hasUserActivity = (d: UserData) => d.grades.length + d.submissions.length + d.forumDiscussions.length + d.groupMembers.length > 0;
+
+/**
+ * Restores learners' work for users that exist (by email) in this organization:
+ * group membership, gradebook grades, assignment submissions (with files and
+ * feedback) and forum discussions/posts. Records of anyone else are skipped and
+ * counted in a warning. The restoring user is recorded as the grader.
+ */
+async function restoreUserData(
+  tx: DB,
+  ctx: {
+    organizationId: string;
+    courseId: string;
+    restorer: string;
+    userData: UserData;
+    localOf: (backupUserId: string) => string | undefined;
+    activityMap: Map<string, string>;
+    itemMap: Map<string, string>;
+    groupMap: Map<string, string>;
+    restoreFile: (oldId: unknown, tag: { component: string; area: string; itemId?: string | null; contextId?: string | null; ownerId?: string }) => Promise<string | null>;
+    html: (value: string | null | undefined, contextId: string) => Promise<string | null>;
+    report: RestoreReport;
+  },
+) {
+  const { organizationId, userData, localOf, report } = ctx;
+  let skipped = 0;
+  const who = (backupUserId: string) => {
+    const id = localOf(backupUserId);
+    if (!id) skipped++;
+    return id;
+  };
+
+  // Groups
+  for (const m of userData.groupMembers) {
+    const groupId = ctx.groupMap.get(m.groupId);
+    const uid = who(m.userId);
+    if (!groupId || !uid) continue;
+    await tx.insert(groupMembers).values({ organizationId, groupId, userId: uid }).onConflictDoNothing();
+    bump(report, "groupMembers");
+  }
+
+  // Gradebook grades (the course total is recalculated, not copied)
+  const items = ctx.itemMap.size ? await tx.select().from(gradeItems).where(inArray(gradeItems.id, [...ctx.itemMap.values()])) : [];
+  const itemById = new Map(items.map((i) => [i.id, i]));
+  const graded = new Set<string>();
+  for (const g of userData.grades) {
+    const item = itemById.get(ctx.itemMap.get(g.itemId) ?? "");
+    const uid = who(g.userId);
+    // Totals (course and category items) are recalculated below rather than copied.
+    if (!item || !uid || item.type === "course" || item.type === "category") continue;
+    const [row] = await tx
+      .insert(gradeGrades)
+      .values({ organizationId, itemId: item.id, userId: uid, rawGrade: g.rawGrade, finalGrade: g.finalGrade, overridden: g.overridden, feedback: g.feedback ? cleanHtml(g.feedback) : null, gradedBy: ctx.restorer })
+      .onConflictDoNothing()
+      .returning({ id: gradeGrades.id });
+    if (!row) continue;
+    graded.add(uid);
+    bump(report, "grades");
+    // Lets completion (grade / pass rules) catch up for the restored grade.
+    if (item.activityId) {
+      await emitInTx(tx, "grade.updated", {
+        organizationId,
+        courseId: ctx.courseId,
+        userId: uid,
+        itemId: item.id,
+        activityId: item.activityId,
+        finalGrade: g.finalGrade,
+        gradeMax: item.gradeMax,
+        gradePass: item.gradePass,
+      });
+    }
+  }
+  if (graded.size) await recalculateCourseTotals(tx, { organizationId, courseId: ctx.courseId, userIds: [...graded] });
+
+  // Assignment submissions
+  const assignmentRows = ctx.activityMap.size
+    ? await tx
+        .select({ id: assignments.id, activityId: assignments.activityId, contextId: activities.contextId })
+        .from(assignments)
+        .innerJoin(activities, eq(activities.id, assignments.activityId))
+        .where(inArray(assignments.activityId, [...ctx.activityMap.values()]))
+    : [];
+  const assignmentOf = new Map(assignmentRows.map((a) => [a.activityId, a]));
+  const SUBMISSION_STATUSES = ["draft", "submitted", "graded"] as const;
+  for (const sub of userData.submissions) {
+    const newActivityId = ctx.activityMap.get(sub.activityId);
+    const assignment = newActivityId ? assignmentOf.get(newActivityId) : undefined;
+    const uid = who(sub.userId);
+    if (!assignment || !uid) continue;
+    const [row] = await tx
+      .insert(assignmentSubmissions)
+      .values({
+        organizationId,
+        assignmentId: assignment.id,
+        userId: uid,
+        attempt: sub.attempt,
+        status: oneOf(SUBMISSION_STATUSES, sub.status, "draft"),
+        text: await ctx.html(sub.text, assignment.contextId),
+        submittedAt: toDate(sub.submittedAt),
+        late: sub.late,
+      })
+      .onConflictDoNothing()
+      .returning({ id: assignmentSubmissions.id });
+    if (!row) continue;
+    for (const fid of sub.fileIds) {
+      const fileId = await ctx.restoreFile(fid, { component: "assignment", area: "submission", itemId: row.id, contextId: assignment.contextId, ownerId: uid });
+      if (fileId) await tx.insert(submissionFiles).values({ organizationId, submissionId: row.id, fileId }).onConflictDoNothing();
+      else bump(report, "submissionFilesMissing");
+    }
+    if (sub.grade !== null || sub.feedback) {
+      await tx.insert(assignmentFeedback).values({
+        organizationId,
+        submissionId: row.id,
+        graderId: ctx.restorer,
+        grade: sub.grade,
+        feedback: await ctx.html(sub.feedback, assignment.contextId),
+      });
+    }
+    bump(report, "submissions");
+  }
+  if (report.counts.submissionFilesMissing) {
+    report.warnings.push(`${report.counts.submissionFilesMissing} submission file(s) were not in the backup (it was made without files)`);
+    delete report.counts.submissionFilesMissing;
+  }
+
+  // Forums: discussions by unknown users are skipped; replies by unknown users are
+  // skipped and their replies re-attached to the nearest restored ancestor.
+  const forumRows = ctx.activityMap.size
+    ? await tx
+        .select({ id: forums.id, activityId: forums.activityId, contextId: activities.contextId })
+        .from(forums)
+        .innerJoin(activities, eq(activities.id, forums.activityId))
+        .where(inArray(forums.activityId, [...ctx.activityMap.values()]))
+    : [];
+  const forumOf = new Map(forumRows.map((f) => [f.activityId, f]));
+  const postsByDiscussion = new Map<string, UserData["forumPosts"]>();
+  for (const p of userData.forumPosts) postsByDiscussion.set(p.discussionId, [...(postsByDiscussion.get(p.discussionId) ?? []), p]);
+  for (const d of userData.forumDiscussions) {
+    const newActivityId = ctx.activityMap.get(d.activityId);
+    const forum = newActivityId ? forumOf.get(newActivityId) : undefined;
+    const uid = who(d.userId);
+    if (!forum || !uid) continue;
+    const posts = [...(postsByDiscussion.get(d.id) ?? [])].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const createdAt = toDate(d.createdAt) ?? new Date();
+    const lastPostAt = posts.reduce((max, p) => {
+      const t = toDate(p.createdAt);
+      return t && t > max ? t : max;
+    }, createdAt);
+    const [disc] = await tx
+      .insert(forumDiscussions)
+      .values({
+        organizationId,
+        forumId: forum.id,
+        userId: uid,
+        groupId: d.groupId ? (ctx.groupMap.get(d.groupId) ?? null) : null,
+        title: d.title.slice(0, 255),
+        pinned: d.pinned,
+        locked: d.locked,
+        createdAt,
+        lastPostAt,
+      })
+      .returning({ id: forumDiscussions.id });
+    bump(report, "forumDiscussions");
+
+    const postMap = new Map<string, string>();
+    const parentOf = new Map(posts.map((p) => [p.id, p.parentId]));
+    const restoredAncestor = (parentId: string | null) => {
+      let cur = parentId;
+      for (let depth = 0; cur && depth < 1000; depth++) {
+        const mapped = postMap.get(cur);
+        if (mapped) return mapped;
+        cur = parentOf.get(cur) ?? null;
+      }
+      return null;
+    };
+    for (const p of posts) {
+      const author = who(p.userId);
+      if (!author) continue;
+      const [row] = await tx
+        .insert(forumPosts)
+        .values({
+          organizationId,
+          discussionId: disc!.id,
+          parentId: restoredAncestor(p.parentId),
+          userId: author,
+          message: p.deleted ? "" : ((await ctx.html(p.message, forum.contextId)) ?? ""),
+          createdAt: toDate(p.createdAt) ?? createdAt,
+          deletedAt: p.deleted ? new Date() : null,
+        })
+        .returning({ id: forumPosts.id });
+      postMap.set(p.id, row!.id);
+      bump(report, "forumPosts");
+    }
+  }
+
+  if (skipped) report.warnings.push(`${skipped} user data record(s) were skipped: their user doesn't exist in this organization`);
 }

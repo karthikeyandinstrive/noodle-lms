@@ -25,9 +25,15 @@ export const LTI = {
   custom: "https://purl.imsglobal.org/spec/lti/claim/custom",
   ags: "https://purl.imsglobal.org/spec/lti-ags/claim/endpoint",
   nrps: "https://purl.imsglobal.org/spec/lti-nrps/claim/namesroleservice",
+  deepLinkingSettings: "https://purl.imsglobal.org/spec/lti-dl/claim/deep_linking_settings",
+  contentItems: "https://purl.imsglobal.org/spec/lti-dl/claim/content_items",
+  dlData: "https://purl.imsglobal.org/spec/lti-dl/claim/data",
+  dlMessage: "https://purl.imsglobal.org/spec/lti-dl/claim/msg",
+  dlErrorMessage: "https://purl.imsglobal.org/spec/lti-dl/claim/errormsg",
 } as const;
 
 export const SCOPES = {
+  lineItem: "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem",
   lineItemReadonly: "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem.readonly",
   score: "https://purl.imsglobal.org/spec/lti-ags/scope/score",
   memberships: "https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly",
@@ -35,7 +41,7 @@ export const SCOPES = {
 
 /** Services a tool may be granted (tool.scopes is a subset of these). */
 export const SUPPORTED_SCOPES: string[] = Object.values(SCOPES);
-export const AGS_SCOPES: string[] = [SCOPES.lineItemReadonly, SCOPES.score];
+export const AGS_SCOPES: string[] = [SCOPES.lineItem, SCOPES.lineItemReadonly, SCOPES.score];
 
 export const ROLES = {
   learner: "http://purl.imsglobal.org/vocab/lis/v2/membership#Learner",
@@ -155,6 +161,8 @@ export type LaunchInput = {
   ags?: { scopes: string[]; lineItemUrl: string; lineItemsUrl: string } | null;
   /** Present when the tool may use NRPS. */
   nrps?: { membershipsUrl: string } | null;
+  /** Makes this a Deep Linking request (content selection) instead of a resource link launch. */
+  deepLinking?: { returnUrl: string; data: string } | null;
 };
 
 export const ID_TOKEN_TTL_SECONDS = 300;
@@ -170,20 +178,32 @@ export function buildLaunchClaims(i: LaunchInput): Record<string, unknown> {
     exp: iat + ID_TOKEN_TTL_SECONDS,
     nonce: i.nonce,
     locale: i.user.locale,
-    [LTI.messageType]: "LtiResourceLinkRequest",
+    [LTI.messageType]: i.deepLinking ? "LtiDeepLinkingRequest" : "LtiResourceLinkRequest",
     [LTI.version]: "1.3.0",
     [LTI.deploymentId]: i.deploymentId,
     [LTI.targetLinkUri]: i.targetLinkUri,
-    [LTI.resourceLink]: {
-      id: i.activity.id,
-      title: i.activity.name,
-      ...(i.activity.description ? { description: stripTags(i.activity.description).slice(0, 1000) } : {}),
-    },
     [LTI.roles]: i.roles,
     [LTI.context]: { id: i.course.id, label: i.course.shortname, title: i.course.fullname, type: [COURSE_OFFERING] },
     [LTI.toolPlatform]: { guid: i.platform.guid, name: i.platform.name, product_family_code: "lms-moodle-v1", version: "1.0" },
     [LTI.launchPresentation]: { document_target: i.documentTarget, return_url: i.returnUrl, locale: i.user.locale },
   };
+  if (i.deepLinking) {
+    claims[LTI.deepLinkingSettings] = {
+      deep_link_return_url: i.deepLinking.returnUrl,
+      accept_types: ["ltiResourceLink"],
+      accept_presentation_document_targets: ["iframe", "window"],
+      accept_multiple: false,
+      auto_create: false,
+      title: i.activity.name,
+      data: i.deepLinking.data,
+    };
+  } else {
+    claims[LTI.resourceLink] = {
+      id: i.activity.id,
+      title: i.activity.name,
+      ...(i.activity.description ? { description: stripTags(i.activity.description).slice(0, 1000) } : {}),
+    };
+  }
   if (Object.keys(i.custom).length) claims[LTI.custom] = i.custom;
   if (i.sharePersonalData) {
     claims.name = `${i.user.firstName} ${i.user.lastName}`.trim();
@@ -196,6 +216,59 @@ export function buildLaunchClaims(i: LaunchInput): Record<string, unknown> {
   }
   if (i.nrps) claims[LTI.nrps] = { context_memberships_url: i.nrps.membershipsUrl, service_versions: ["2.0"] };
   return claims;
+}
+
+// ─── Deep Linking response ──────────────────────────────────────────────────
+
+export type DeepLinkSelection = {
+  url: string | null;
+  title: string | null;
+  custom: Record<string, string>;
+  scoreMaximum: number | null;
+  openInNewWindow: boolean;
+};
+
+/**
+ * Reads a verified LtiDeepLinkingResponse: checks the message type, version, deployment and the
+ * echoed `data`, then returns the first ltiResourceLink item. `null` means the teacher picked nothing.
+ */
+export function parseDeepLinkingResponse(
+  payload: Record<string, unknown>,
+  expected: { deploymentId: string; data: string },
+): { selection: DeepLinkSelection | null; message: string | null } {
+  if (payload[LTI.messageType] !== "LtiDeepLinkingResponse") throw new Error("Not a Deep Linking response");
+  if (payload[LTI.version] !== "1.3.0") throw new Error("Unsupported LTI version");
+  if (payload[LTI.deploymentId] !== expected.deploymentId) throw new Error("Unknown deployment");
+  if (payload[LTI.dlData] !== expected.data) throw new Error("The response does not belong to this request");
+  const error = payload[LTI.dlErrorMessage];
+  if (typeof error === "string" && error) throw new Error(`The tool reported an error: ${error.slice(0, 300)}`);
+  const msg = payload[LTI.dlMessage];
+  const message = typeof msg === "string" && msg ? msg.slice(0, 500) : null;
+
+  const items = Array.isArray(payload[LTI.contentItems]) ? (payload[LTI.contentItems] as Record<string, unknown>[]) : [];
+  const link = items.find((x) => x && typeof x === "object" && x.type === "ltiResourceLink");
+  if (!link) return { selection: null, message };
+
+  const url = typeof link.url === "string" && /^https?:\/\//i.test(link.url) ? link.url.slice(0, 2000) : null;
+  const custom: Record<string, string> = {};
+  if (link.custom && typeof link.custom === "object") {
+    for (const [k, v] of Object.entries(link.custom as Record<string, unknown>).slice(0, 50)) {
+      if (CUSTOM_KEY.test(k) && (typeof v === "string" || typeof v === "number" || typeof v === "boolean")) custom[k] = String(v).slice(0, 4000);
+    }
+  }
+  const lineItem = link.lineItem as { scoreMaximum?: unknown } | undefined;
+  const max = typeof lineItem?.scoreMaximum === "number" && lineItem.scoreMaximum > 0 ? Math.min(lineItem.scoreMaximum, 10_000) : null;
+  const target = (link.window ? "window" : (link.iframe ? "iframe" : null)) ?? (link.presentation as { documentTarget?: string } | undefined)?.documentTarget;
+  return {
+    selection: {
+      url,
+      title: typeof link.title === "string" && link.title.trim() ? link.title.trim().slice(0, 255) : null,
+      custom,
+      scoreMaximum: max,
+      openInNewWindow: target === "window",
+    },
+    message,
+  };
 }
 
 function stripTags(html: string) {

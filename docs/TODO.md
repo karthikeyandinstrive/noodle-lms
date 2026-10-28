@@ -22,18 +22,18 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 ## P1 — Soon
 
 - [ ] **Manual browser QA of every screen.** Automated E2E covers login, permissions, assignment, grading and notifications. Admin, LTI, SSO, system, search, messages and Spanish were spot-checked; the rest haven't been clicked through.
-- [ ] Native-speaker review of the Spanish translations (2,100+ keys).
-- [ ] Tracing (OpenTelemetry) and log shipping. Metrics (`/metrics`) and readiness (`/ready`) are done.
+- [ ] Native-speaker review of the Spanish translations (2,200+ keys).
+- [ ] Tracing (OpenTelemetry) and log shipping, once a collector/vendor is chosen. Metrics (`/metrics`) and readiness (`/ready`) are done.
+- [ ] **Run the load tests** in `loadtest/` against real PostgreSQL (needs k6) and tune from the results. The scripts and seed are verified against the API; k6 itself hasn't been run.
+- [ ] **Decide: plan limits when self-hosted.** `assertWithinLimits` applies the Free plan (50 users, 5 courses) to every organization, even with `SAAS_MODE` off. Self-hosted installs probably want no limits.
 
 ## P2 — Improvements
 
-- [ ] LTI Deep Linking, AGS line-item create/update and result service, course-scoped tools.
-- [ ] Multi-SCO SCORM packages and sequencing/navigation (only the first SCO plays today).
+- [ ] LTI: AGS result service, multiple line items per link, course-scoped tools (teachers registering their own tools).
+- [ ] SCORM 2004 sequencing rules (pre/post conditions, rollup rules); SCOs can be opened in any order today.
 - [ ] Moodle `.mbz` import of question banks, files and grade setup (structure, page/url/label/assign/forum/quiz settings import today).
-- [ ] Restore user data such as grades, submissions and forum posts from backups (it is exported but not restored).
-- [ ] Delete extracted H5P/SCORM package files when the activity itself is deleted (replacing a package already cleans up).
-- [ ] Search performance for staff in very large organizations (per-course capability checks).
-- [ ] Load testing (quiz attempts, gradebook, reports on large courses).
+- [ ] Restore quiz attempts, workshop data and attendance from backups (grades, submissions, groups and forum posts are restored).
+- [ ] Search across very large organizations: activity/forum queries filter with `IN (course ids)`; above ~60k courses this needs a join or chunking.
 
 ## P3 — Future scope
 
@@ -63,5 +63,11 @@ Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3*
 - [x] Spanish for API-sourced text (capability descriptions, notification types, plan names), keyed by id in the web app
 - [x] Replaced H5P/SCORM packages delete their old extracted files (durable `storage.delete_prefix` job)
 - [x] Forum reply/edit editor autofocus; hydration-safe dashboard greeting; removed deprecated `blindOrder` helpers
-- [x] **400 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
+- [x] Package files are deleted with their SCORM/H5P activity (or course), via an activity-type `remove` hook
+- [x] **Restore user data** from backups: group membership, grades (totals recalculated, completion re-evaluated), assignment submissions with files and feedback, forum discussions and posts (users matched by email; others skipped and reported)
+- [x] **Multi-SCO SCORM**: per-SCO tracking (`scorm_sco_tracks`), attempt rolled up across SCOs, per-SCO launch settings, lesson navigation in the player
+- [x] **LTI Deep Linking 2.0** (teacher picks content in the tool; signed response verified against the tool's JWKS, single use) and **AGS line item create/update** (`lineitem` scope)
+- [x] Search: bulk capability resolution (`prefetchCapabilities`) instead of per-course checks, with an equivalence test against `hasCapability`
+- [x] **Load-testing kit** (`loadtest/`): seed script for a large course, k6 scenarios for quiz attempts and gradebook/reports with p95 thresholds; `RATE_LIMIT_ALLOWLIST` for test runners
+- [x] **411 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
 - [x] Pushed to GitHub: `karthikeyandinstrive/noodle-lms` (`main` + `feature/initial-lms`)

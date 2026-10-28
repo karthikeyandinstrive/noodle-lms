@@ -15,7 +15,7 @@ import {
 import { ManifestError, parseManifest, parseXml, splitHref } from "./manifest";
 import { entryFor, foldSessionTime, initialCmi } from "./runtime";
 import { contentPath, scormMime } from "./routes";
-import { contentToken, inspectScorm, verifyContentToken } from "./service";
+import { aggregateScos, contentToken, inspectScorm, verifyContentToken } from "./service";
 
 const MANIFEST_12 = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE manifest [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
@@ -425,5 +425,27 @@ describe("runtime initial data", () => {
     expect(cmi["cmi.completion_status"]).toBe("unknown");
     expect(cmi["cmi.scaled_passing_score"]).toBe("0.7");
     expect(cmi["cmi.total_time"]).toBe("PT0S");
+  });
+});
+
+describe("multi-SCO aggregation", () => {
+  const t = (status: string, scoreRaw: number | null = null, scoreMax: number | null = null, totalTimeSeconds = 10) => ({ status, scoreRaw, scoreMax, totalTimeSeconds });
+
+  it("is incomplete until every SCO is finished", () => {
+    expect(aggregateScos(3, []).status).toBe("not attempted");
+    expect(aggregateScos(3, [t("not attempted")]).status).toBe("not attempted");
+    expect(aggregateScos(3, [t("passed"), t("completed")]).status).toBe("incomplete");
+    expect(aggregateScos(2, [t("passed"), t("incomplete")]).status).toBe("incomplete");
+  });
+
+  it("fails if any SCO failed, passes only if all passed", () => {
+    expect(aggregateScos(2, [t("passed"), t("failed")]).status).toBe("failed");
+    expect(aggregateScos(2, [t("passed"), t("passed")]).status).toBe("passed");
+    expect(aggregateScos(2, [t("passed"), t("completed")]).status).toBe("completed");
+  });
+
+  it("sums scores of scored SCOs and all time", () => {
+    expect(aggregateScos(3, [t("passed", 8, 10), t("completed"), t("failed", 3, 20)])).toMatchObject({ scoreRaw: 11, scoreMax: 30, totalTimeSeconds: 30 });
+    expect(aggregateScos(1, [t("completed")])).toMatchObject({ scoreRaw: null, scoreMax: null });
   });
 });

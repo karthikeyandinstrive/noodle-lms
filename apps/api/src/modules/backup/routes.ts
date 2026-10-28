@@ -147,6 +147,8 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           shortname: z.string().trim().min(1).max(100).optional(),
           /** Enrol users of the backup that exist (by email) in this organization. */
           restoreEnrolments: z.boolean().default(false),
+          /** With enrolments: also restore those users' grades, submissions, group membership and forum posts. */
+          restoreUserData: z.boolean().default(false),
         }),
         response: { 201: zBackup },
       },

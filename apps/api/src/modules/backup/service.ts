@@ -171,7 +171,7 @@ export async function runRestoreJob(payload: BackupJobPayload, ctx: { tenantId: 
   try {
     await withTenant(tenantId, async (tx) => {
       if (!row.fileId || !row.createdBy) throw new BackupError("The uploaded backup file is missing");
-      const opts = row.options as { categoryId?: string | null; fullname?: string | null; shortname?: string | null; restoreEnrolments?: boolean };
+      const opts = row.options as { categoryId?: string | null; fullname?: string | null; shortname?: string | null; restoreEnrolments?: boolean; restoreUserData?: boolean };
       const report: RestoreReport = { counts: {}, warnings: [], unsupported: [] };
       const loaded = await loadArchive(tx, tenantId, row.fileId, report);
       const { course } = await restoreCourse(tx, {
@@ -184,6 +184,7 @@ export async function runRestoreJob(payload: BackupJobPayload, ctx: { tenantId: 
         fullname: opts.fullname ?? null,
         shortname: opts.shortname ?? null,
         restoreEnrolments: !!opts.restoreEnrolments,
+        restoreUserData: !!opts.restoreEnrolments && !!opts.restoreUserData,
         report,
       });
       await tx

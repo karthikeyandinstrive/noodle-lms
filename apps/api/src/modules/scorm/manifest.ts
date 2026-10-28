@@ -146,6 +146,23 @@ export type ScormVersion = "1.2" | "2004";
 
 export type ManifestItem = { identifier: string; title: string; resourceId: string | null; href: string | null; isSco: boolean };
 
+/** One launchable SCO, with the launch settings that apply to it. */
+export type ScoInfo = {
+  identifier: string;
+  title: string;
+  /** Package-relative launch path including item parameters (query/fragment). */
+  href: string;
+  masteryScore: number | null;
+  scaledPassingScore: number | null;
+  completionThreshold: number | null;
+  launchData: string | null;
+  maxTimeAllowed: string | null;
+  timeLimitAction: string | null;
+};
+
+/** Most SCOs kept per package; larger packages are rejected. */
+export const MAX_SCOS = 200;
+
 export type ManifestInfo = {
   version: ScormVersion;
   schemaVersion: string | null;
@@ -158,6 +175,8 @@ export type ManifestInfo = {
   scoCount: number;
   multiSco: boolean;
   items: ManifestItem[];
+  /** Every SCO in organization order (the first one's settings are also at the top level). */
+  scos: ScoInfo[];
   /** SCORM 1.2 adlcp:masteryscore (0–100). */
   masteryScore: number | null;
   /** SCORM 2004 imsss minNormalizedMeasure when satisfiedByMeasure (−1…1). */
@@ -265,14 +284,29 @@ export function parseManifest(xml: string): ManifestInfo {
     first = { identifier: id, title: id, resourceId: id, href: res.href, isSco: res.isSco };
   }
 
-  const itemEl = meta.get(first.identifier);
-  let scaledPassingScore: number | null = null;
-  const objectives = kid(kid(itemEl, "sequencing"), "objectives");
-  const primary = kid(objectives, "primaryObjective");
-  if (primary && (attr(primary, "satisfiedByMeasure") ?? "").toLowerCase() === "true") {
-    scaledPassingScore = num(textOf(kid(primary, "minNormalizedMeasure")) || "1");
-  }
-  const threshold = kid(itemEl, "completionThreshold");
+  const scoInfo = (item: ManifestItem): ScoInfo => {
+    const el = meta.get(item.identifier);
+    let scaledPassingScore: number | null = null;
+    const primary = kid(kid(kid(el, "sequencing"), "objectives"), "primaryObjective");
+    if (primary && (attr(primary, "satisfiedByMeasure") ?? "").toLowerCase() === "true") {
+      scaledPassingScore = num(textOf(kid(primary, "minNormalizedMeasure")) || "1");
+    }
+    const threshold = kid(el, "completionThreshold");
+    return {
+      identifier: item.identifier,
+      title: item.title,
+      href: item.href!,
+      masteryScore: num(textOf(kid(el, "masteryscore"))),
+      scaledPassingScore,
+      completionThreshold: threshold ? num(attr(threshold, "minProgressMeasure") ?? textOf(threshold)) : null,
+      launchData: textOf(kid(el, "datafromlms")).slice(0, 4096) || null,
+      maxTimeAllowed: textOf(kid(el, "maxtimeallowed")) || null,
+      timeLimitAction: textOf(kid(el, "timelimitaction")) || null,
+    };
+  };
+  if (scos.length > MAX_SCOS) throw new ManifestError(`The package has ${scos.length} SCOs (max ${MAX_SCOS})`);
+  const scoList = (scos.length ? scos : [first]).map(scoInfo);
+  const head = scoList[0]!;
 
   return {
     version,
@@ -285,12 +319,13 @@ export function parseManifest(xml: string): ManifestInfo {
     scoCount: Math.max(1, scos.length),
     multiSco: scos.length > 1,
     items: items.slice(0, 100),
-    masteryScore: num(textOf(kid(itemEl, "masteryscore"))),
-    scaledPassingScore,
-    completionThreshold: threshold ? num(attr(threshold, "minProgressMeasure") ?? textOf(threshold)) : null,
-    launchData: textOf(kid(itemEl, "datafromlms")).slice(0, 4096) || null,
-    maxTimeAllowed: textOf(kid(itemEl, "maxtimeallowed")) || null,
-    timeLimitAction: textOf(kid(itemEl, "timelimitaction")) || null,
+    scos: scoList,
+    masteryScore: head.masteryScore,
+    scaledPassingScore: head.scaledPassingScore,
+    completionThreshold: head.completionThreshold,
+    launchData: head.launchData,
+    maxTimeAllowed: head.maxTimeAllowed,
+    timeLimitAction: head.timeLimitAction,
   };
 }
 

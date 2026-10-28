@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, Plug } from "lucide-react";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { QueryState } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -104,16 +104,52 @@ function parseLines(text: string): { params: Record<string, string>; error: stri
   return { params, error: null };
 }
 
-function SettingsFields({ value, onChange }: SettingsFieldsProps) {
+const noSubscribe = () => () => {};
+
+/**
+ * LTI Deep Linking: the teacher picks content inside the tool, which sends back the link
+ * (URL, title, custom parameters, maximum grade). The tool returns to this edit page.
+ */
+function DeepLinkPanel({ activityId, toolId, savedToolId }: { activityId: string; toolId?: string; savedToolId?: string }) {
+  const t = useT();
+  // Set by the tool's return redirect (?deepLink=selected|cancelled).
+  const result = useSyncExternalStore(
+    noSubscribe,
+    () => new URLSearchParams(window.location.search).get("deepLink"),
+    () => null,
+  );
+  const changed = toolId !== savedToolId;
+  return (
+    <div className="space-y-2 rounded-lg border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-muted-foreground">{t("lti.deepLinkHelp", "Pick a specific resource (a quiz, a video …) inside the tool. Its link, title and maximum grade are filled in for you.")}</p>
+        {changed ? (
+          <span className="text-xs text-muted-foreground">{t("lti.deepLinkSaveFirst", "Save the new tool first")}</span>
+        ) : (
+          <a href={`/api/v1/lti/${activityId}/deep-link`} className={buttonVariants({ variant: "outline", size: "sm" })}>
+            {t("lti.deepLink", "Choose content in the tool")}
+          </a>
+        )}
+      </div>
+      {result === "selected" && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">{t("lti.deepLinkSelected", "Content selected. The link below was updated.")}</p>}
+      {result === "cancelled" && <p role="status" className="text-sm text-muted-foreground">{t("lti.deepLinkCancelled", "No content was selected.")}</p>}
+    </div>
+  );
+}
+
+function SettingsFields({ value, onChange, activityId }: SettingsFieldsProps) {
   const t = useT();
   const tools = useQuery({ queryKey: ["lti", "tools", "available"], queryFn: () => api<AvailableTool[]>("/lti/tools/available") });
   const [text, setText] = useState(() => toLines(value.customParams as Record<string, string> | undefined));
   const [badLine, setBadLine] = useState<string | null>(null);
   const gradeMax = value.gradeMax as number | null | undefined;
   const graded = gradeMax !== null && gradeMax !== undefined;
+  // Content selection runs against the saved tool; a changed tool must be saved first.
+  const [savedToolId] = useState(() => value.toolId as string | undefined);
 
   return (
     <div className="space-y-4">
+      {activityId && <DeepLinkPanel activityId={activityId} toolId={value.toolId as string | undefined} savedToolId={savedToolId} />}
       <div className="space-y-1.5">
         <Label htmlFor="lti-tool">{t("lti.tool", "Tool")}</Label>
         <QueryState query={tools}>

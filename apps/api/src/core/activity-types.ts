@@ -23,6 +23,11 @@ export type ActivityTypeHandler<S extends z.ZodRawShape = z.ZodRawShape> = {
   load(tx: DB, activity: ActivityRow): Promise<Record<string, unknown> | null>;
   /** Present for gradable types: drives creation of the activity's grade item. */
   grading?: (tx: DB, activity: ActivityRow) => Promise<{ gradeMax: number; gradePass: number | null }>;
+  /**
+   * Called inside the deleting transaction, before the activity row goes (alone or with its course).
+   * Database rows cascade; use this for data outside the database, e.g. queue storage cleanup.
+   */
+  remove?: (tx: DB, activity: ActivityRow) => Promise<void>;
 };
 
 const registry = new Map<ActivityType, ActivityTypeHandler>();
@@ -35,6 +40,11 @@ export function activityType(type: ActivityType) {
   const handler = registry.get(type);
   if (!handler) throw badRequest(`Activity type "${type}" is not available`);
   return handler;
+}
+
+/** Runs each type's `remove` hook for activities about to be deleted. */
+export async function beforeActivitiesDeleted(tx: DB, rows: ActivityRow[]) {
+  for (const row of rows) await registry.get(row.type)?.remove?.(tx, row);
 }
 
 export function registeredActivityTypes() {

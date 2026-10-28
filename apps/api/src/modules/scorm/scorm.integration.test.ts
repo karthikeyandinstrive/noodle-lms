@@ -194,6 +194,71 @@ describe("SCORM", () => {
   });
 });
 
+describe("multi-SCO packages", () => {
+  const MULTI = `<?xml version="1.0"?>
+<manifest identifier="m2" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2">
+  <metadata><schemaversion>1.2</schemaversion></metadata>
+  <organizations default="o"><organization identifier="o"><title>Two lessons</title>
+    <item identifier="one" identifierref="r1"><title>Lesson 1</title></item>
+    <item identifier="two" identifierref="r2"><title>Lesson 2</title><adlcp:masteryscore>50</adlcp:masteryscore></item>
+  </organization></organizations>
+  <resources>
+    <resource identifier="r1" type="webcontent" adlcp:scormtype="sco" href="one/index.html"/>
+    <resource identifier="r2" type="webcontent" adlcp:scormtype="sco" href="two/index.html"/>
+  </resources>
+</manifest>`;
+  let multiId: string;
+
+  it("tracks each SCO and rolls them up into the attempt", async () => {
+    const sectionId = (await admin.req("GET", `/courses/${courseId}`)).body.sections[0].id;
+    const fileId = await upload(
+      admin,
+      "two.zip",
+      storedZip([
+        { name: "imsmanifest.xml", data: MULTI },
+        { name: "one/index.html", data: "<html>1</html>" },
+        { name: "two/index.html", data: "<html>2</html>" },
+      ]),
+    );
+    const created = await admin.req("POST", `/courses/${courseId}/activities`, { type: "scorm", sectionId, name: "Two lessons", settings: { packageFileId: fileId } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    multiId = created.body.id;
+
+    const first = await student.req("POST", `/scorm/${multiId}/attempts`, {});
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ multiSco: true, sco: "one" });
+    expect(first.body.scos.map((x: { identifier: string; title: string }) => [x.identifier, x.title])).toEqual([
+      ["one", "Lesson 1"],
+      ["two", "Lesson 2"],
+    ]);
+    expect(first.body.contentUrl).toMatch(/\/one\/index\.html$/);
+    const attemptId = first.body.attemptId;
+
+    // Values must name their SCO.
+    expect((await student.req("PUT", `/scorm/${multiId}/attempts/${attemptId}/commit`, { cmi: { "cmi.core.lesson_status": "completed" } })).status).toBe(400);
+    const c1 = await student.req("PUT", `/scorm/${multiId}/attempts/${attemptId}/commit`, { sco: "one", cmi: { "cmi.core.lesson_status": "completed" }, finish: true });
+    expect(c1.body).toMatchObject({ scoStatus: "completed", status: "incomplete" });
+
+    // Resuming launches the first unfinished SCO, with its own mastery score.
+    const next = await student.req("POST", `/scorm/${multiId}/attempts`, {});
+    expect(next.body).toMatchObject({ sco: "two", attemptId });
+    expect(next.body.cmi["cmi.student_data.mastery_score"]).toBe("50");
+    expect(next.body.scos.find((x: { identifier: string }) => x.identifier === "one").status).toBe("completed");
+    const c2 = await student.req("PUT", `/scorm/${multiId}/attempts/${attemptId}/commit`, {
+      sco: "two",
+      cmi: { "cmi.core.lesson_status": "completed", "cmi.core.score.raw": "80", "cmi.core.score.max": "100" },
+      finish: true,
+    });
+    expect(c2.body).toMatchObject({ scoStatus: "passed", status: "completed", scoreRaw: 80, scoreMax: 100 });
+
+    // A finished SCO can be reopened by name; the other SCO's data is untouched.
+    const again = await student.req("POST", `/scorm/${multiId}/attempts`, { sco: "one" });
+    expect(again.body).toMatchObject({ sco: "one" });
+    expect(again.body.cmi["cmi.core.lesson_status"]).toBe("completed");
+    expect((await student.req("POST", `/scorm/${multiId}/attempts`, { sco: "nope" })).status).toBe(400);
+  });
+});
+
 describe("package replacement", () => {
   it("deletes the old package's extracted files after a new package is installed", async () => {
     const { existsSync } = await import("node:fs");
@@ -219,5 +284,19 @@ describe("package replacement", () => {
     while ((await runDueJobs(50)) > 0);
     expect(existsSync(path.join(storageDir, oldPrefix))).toBe(false);
     expect(existsSync(path.join(storageDir, newPrefix, "sco/index.html"))).toBe(true);
+  });
+});
+
+describe("activity deletion", () => {
+  it("deletes the package's extracted files with the activity", async () => {
+    const { existsSync } = await import("node:fs");
+    const { eq } = await import("drizzle-orm");
+    const { scormPackages, systemDb } = await import("@lms/db");
+    const { runDueJobs } = await import("../../core/jobs");
+    const [pkg] = await (await systemDb()).select().from(scormPackages).where(eq(scormPackages.activityId, activityId));
+    expect(existsSync(path.join(storageDir, pkg!.storagePrefix))).toBe(true);
+    expect((await admin.req("DELETE", `/activities/${activityId}`)).status).toBe(200);
+    while ((await runDueJobs(50)) > 0);
+    expect(existsSync(path.join(storageDir, pkg!.storagePrefix))).toBe(false);
   });
 });

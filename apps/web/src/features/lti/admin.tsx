@@ -23,6 +23,7 @@ type Tool = {
   deploymentId: string;
   loginUrl: string;
   launchUrl: string;
+  deepLinkingUrl: string | null;
   jwksUrl: string;
   redirectUris: string[];
   scopes: string[];
@@ -44,7 +45,12 @@ type ToolConfig = {
 
 type PlatformKey = { kid: string; active: boolean; createdAt: string };
 
-const AGS = ["https://purl.imsglobal.org/spec/lti-ags/scope/lineitem.readonly", "https://purl.imsglobal.org/spec/lti-ags/scope/score"];
+const AGS = [
+  "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem",
+  "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem.readonly",
+  "https://purl.imsglobal.org/spec/lti-ags/scope/score",
+];
+const AGS_SCORE = "https://purl.imsglobal.org/spec/lti-ags/scope/score";
 const NRPS = ["https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly"];
 
 const toolsKey = ["admin", "lti", "tools"] as const;
@@ -55,6 +61,7 @@ type Form = {
   description: string;
   loginUrl: string;
   launchUrl: string;
+  deepLinkingUrl: string;
   jwksUrl: string;
   redirectUris: string;
   ags: boolean;
@@ -68,9 +75,10 @@ const toForm = (t?: Tool): Form => ({
   description: t?.description ?? "",
   loginUrl: t?.loginUrl ?? "",
   launchUrl: t?.launchUrl ?? "",
+  deepLinkingUrl: t?.deepLinkingUrl ?? "",
   jwksUrl: t?.jwksUrl ?? "",
   redirectUris: (t?.redirectUris ?? []).join("\n"),
-  ags: t ? AGS.every((s) => t.scopes.includes(s)) : true,
+  ags: t ? t.scopes.includes(AGS_SCORE) : true,
   nrps: t ? NRPS.every((s) => t.scopes.includes(s)) : true,
   sharePersonalData: t?.sharePersonalData ?? true,
   enabled: t?.enabled ?? true,
@@ -137,6 +145,7 @@ function ToolForm({ tool, onDone }: { tool?: Tool; onDone: () => void }) {
         description: v.description.trim() || null,
         loginUrl: v.loginUrl.trim(),
         launchUrl: v.launchUrl.trim(),
+        deepLinkingUrl: v.deepLinkingUrl.trim() || null,
         jwksUrl: v.jwksUrl.trim(),
         redirectUris: v.redirectUris
           .split(/\s+/)
@@ -184,6 +193,9 @@ function ToolForm({ tool, onDone }: { tool?: Tool; onDone: () => void }) {
               <Input id="lti-launch" type="url" required value={v.launchUrl} onChange={(e) => set("launchUrl", e.target.value)} />
             </Field>
           </div>
+          <Field id="lti-deeplink" label={t("lti.admin.deepLinkingUrl", "Deep Linking URL (optional)")} hint={t("lti.admin.deepLinkingHint", "Where teachers choose content in the tool. Defaults to the launch URL.")}>
+            <Input id="lti-deeplink" type="url" value={v.deepLinkingUrl} onChange={(e) => set("deepLinkingUrl", e.target.value)} />
+          </Field>
           <Field id="lti-jwks" label={t("lti.admin.toolJwks", "Tool public keyset (JWKS) URL")}>
             <Input id="lti-jwks" type="url" required value={v.jwksUrl} onChange={(e) => set("jwksUrl", e.target.value)} />
           </Field>

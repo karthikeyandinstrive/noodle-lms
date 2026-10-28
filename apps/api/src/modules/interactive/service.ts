@@ -187,6 +187,11 @@ export function setupInteractive() {
         gradeMax: row.gradeMax,
       };
     },
+    async remove(tx, activity) {
+      const row = await interactiveOf(tx, activity.id);
+      const prefix = row && h5pInfo(row)?.prefix;
+      if (prefix) await queuePackageCleanup(tx, activity.organizationId, prefix);
+    },
     async grading(tx, activity) {
       const row = await interactiveOf(tx, activity.id);
       return { gradeMax: row?.gradeMax ?? 100, gradePass: null };

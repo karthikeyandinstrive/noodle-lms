@@ -247,3 +247,111 @@ describe("LTI 1.3 platform", () => {
     expect((await admin.req("DELETE", `/lti/tools/${tool.id}`)).status).toBe(409);
   });
 });
+
+describe("LTI Deep Linking and line item management", () => {
+  const DL = "https://purl.imsglobal.org/spec/lti-dl/claim/";
+  const LTI_CLAIM = "https://purl.imsglobal.org/spec/lti/claim/";
+
+  /** Runs the teacher's Deep Linking launch up to the signed request; returns its claims. */
+  async function deepLinkRequest() {
+    const start = await inject("GET", `/lti/${activityId}/deep-link`, { cookie: admin.cookie });
+    expect(start.statusCode).toBe(200);
+    const hint = hidden(start.body, "lti_message_hint")!;
+    const loginHint = hidden(start.body, "login_hint")!;
+    const res = await inject("GET", `/lti/auth?${authParams(hint, loginHint)}`, { cookie: admin.cookie });
+    expect(res.statusCode).toBe(200);
+    const keys = (await inject("GET", `/lti/jwks/${env.orgs.default!.id}`)).json();
+    const { payload } = await jwtVerify(hidden(res.body, "id_token")!, createLocalJWKSet(keys), { issuer: "http://localhost:3000", audience: tool.clientId });
+    return payload;
+  }
+
+  const response = (claims: Record<string, unknown>) =>
+    new SignJWT({
+      [`${LTI_CLAIM}message_type`]: "LtiDeepLinkingResponse",
+      [`${LTI_CLAIM}version`]: "1.3.0",
+      [`${LTI_CLAIM}deployment_id`]: tool.deploymentId,
+      nonce: "dl-nonce",
+      ...claims,
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "tool-1" })
+      .setIssuer(tool.clientId)
+      .setAudience("http://localhost:3000")
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(toolKey);
+
+  const postBack = async (jwt: string) =>
+    inject("POST", "/lti/deep-link/return", { headers: { "content-type": "application/x-www-form-urlencoded" }, payload: new URLSearchParams({ JWT: jwt }).toString() });
+
+  it("only editors can start content selection", async () => {
+    expect((await inject("GET", `/lti/${activityId}/deep-link`, { cookie: student.cookie })).statusCode).toBeGreaterThanOrEqual(403);
+  });
+
+  it("sends a Deep Linking request and saves the selected link", async () => {
+    const req = await deepLinkRequest();
+    expect(req[`${LTI_CLAIM}message_type`]).toBe("LtiDeepLinkingRequest");
+    expect(req[`${LTI_CLAIM}resource_link`]).toBeUndefined();
+    const settings = req[`${DL}deep_linking_settings`] as { deep_link_return_url: string; data: string; accept_types: string[] };
+    expect(settings).toMatchObject({ deep_link_return_url: "http://localhost:3000/api/v1/lti/deep-link/return", accept_types: ["ltiResourceLink"] });
+
+    const jwt = await response({
+      [`${DL}data`]: settings.data,
+      [`${DL}content_items`]: [
+        { type: "ltiResourceLink", title: "Chapter 3 quiz", url: `${toolBase}/launch/quiz-3`, custom: { quiz: "3" }, lineItem: { scoreMaximum: 25, label: "Chapter 3 quiz" }, window: { targetName: "_blank" } },
+      ],
+    });
+    const res = await postBack(jwt);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.body).toContain(`/activities/${activityId}/edit`);
+
+    const activity = await admin.req("GET", `/activities/${activityId}`);
+    expect(activity.body.name).toBe("Chapter 3 quiz");
+    expect(activity.body.settings).toMatchObject({ targetLinkUri: `${toolBase}/launch/quiz-3`, customParams: { quiz: "3" }, gradeMax: 25, openInNewWindow: true });
+
+    // Single use.
+    expect((await postBack(jwt)).body).toContain("already saved");
+  });
+
+  it("rejects responses that don't match a request or aren't signed by the tool", async () => {
+    const forged = await response({ [`${DL}data`]: "not-a-request", [`${DL}content_items`]: [] });
+    expect((await postBack(forged)).statusCode).toBe(400);
+    const req = await deepLinkRequest();
+    const data = (req[`${DL}deep_linking_settings`] as { data: string }).data;
+    const wrongAudience = await new SignJWT({ [`${LTI_CLAIM}message_type`]: "LtiDeepLinkingResponse", [`${DL}data`]: data })
+      .setProtectedHeader({ alg: "RS256", kid: "tool-1" })
+      .setIssuer(tool.clientId)
+      .setAudience("https://elsewhere.example")
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(toolKey);
+    expect((await postBack(wrongAudience)).body).toContain("could not be verified");
+  });
+
+  it("lets the tool update its line item with the lineitem scope", async () => {
+    const signed = await new SignJWT({ jti: "jti-lineitem" })
+      .setProtectedHeader({ alg: "RS256", kid: "tool-1" })
+      .setIssuer(tool.clientId)
+      .setSubject(tool.clientId)
+      .setAudience("http://localhost:3000/api/v1/lti/token")
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(toolKey);
+    const tokenRes = await inject("POST", "/lti/token", {
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: signed,
+        scope: "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem",
+      }).toString(),
+    });
+    expect(tokenRes.statusCode).toBe(200);
+    const auth = { authorization: `Bearer ${tokenRes.json().access_token}`, "content-type": "application/vnd.ims.lis.v2.lineitem+json" };
+    const put = await inject("POST", `/lti/ags/${activityId}/lineitems`, { headers: auth, payload: JSON.stringify({ scoreMaximum: 40, label: "Quiz" }) });
+    expect(put.statusCode).toBe(409); // one line item per link, already created
+    const upd = await env.app.inject({ method: "PUT", url: `/api/v1/lti/ags/${activityId}/lineitem`, headers: { host: "localhost", ...auth }, payload: JSON.stringify({ scoreMaximum: 40, label: "Quiz" }) });
+    expect(upd.statusCode, upd.body).toBe(200);
+    expect(upd.json()).toMatchObject({ scoreMaximum: 40 });
+    expect((await admin.req("GET", `/activities/${activityId}`)).body.settings.gradeMax).toBe(40);
+  });
+});

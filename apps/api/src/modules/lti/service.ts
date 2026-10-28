@@ -42,6 +42,7 @@ export function platformUrls(base: string, organizationId: string) {
     lineItemsUrl: (activityId: string) => `${api}/ags/${activityId}/lineitems`,
     lineItemUrl: (activityId: string) => `${api}/ags/${activityId}/lineitem`,
     membershipsUrl: (activityId: string) => `${api}/nrps/${activityId}/memberships`,
+    deepLinkReturnUrl: `${api}/deep-link/return`,
     returnUrl: (activityId: string) => `${base}/activities/${activityId}`,
   };
 }
@@ -293,6 +294,44 @@ export class OAuthError extends Error {
     public readonly status = 400,
   ) {
     super(message);
+  }
+}
+
+/**
+ * Verifies a JWT the tool signed for this platform (e.g. a Deep Linking response):
+ * iss = the tool's client_id, aud = our issuer, signed by a key in the tool's JWKS.
+ */
+export async function verifyToolMessage(jwt: string): Promise<{ tool: ToolRow; payload: JWTPayload }> {
+  let unverified: JWTPayload;
+  try {
+    unverified = decodeJwt(jwt);
+  } catch {
+    throw new Error("The tool's response is not a JWT");
+  }
+  const clientId = typeof unverified.iss === "string" ? unverified.iss : "";
+  if (!clientId || clientId.length > 200) throw new Error("Unknown tool");
+  const db = await systemDb();
+  // client_id is globally unique; the only cross-tenant read, everything after runs in the tenant.
+  const [tool] = await db.select().from(ltiTools).where(and(eq(ltiTools.clientId, clientId), eq(ltiTools.enabled, true))).limit(1);
+  if (!tool) throw new Error("Unknown tool");
+  const [org] = await db
+    .select({ slug: organizations.slug, customDomain: organizations.customDomain })
+    .from(organizations)
+    .where(eq(organizations.id, tool.organizationId))
+    .limit(1);
+  const issuers = [...new Set([platformUrls(orgBaseUrl(org!), tool.organizationId).issuer, config.APP_URL.replace(/\/+$/, "")])];
+  try {
+    const { payload } = await jwtVerify(jwt, await remoteJwks(tool.jwksUrl), {
+      issuer: clientId,
+      audience: issuers,
+      algorithms: ["RS256", "RS384", "RS512", "PS256", "ES256"],
+      maxTokenAge: "1h",
+      clockTolerance: 60,
+      requiredClaims: ["exp", "iat"],
+    });
+    return { tool, payload };
+  } catch (err) {
+    throw new Error(`The tool's response could not be verified (${err instanceof joseErrors.JOSEError ? err.code : "invalid"})`);
   }
 }
 

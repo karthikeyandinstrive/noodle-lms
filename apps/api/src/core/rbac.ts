@@ -76,6 +76,72 @@ export async function hasCapability(
   return allowed;
 }
 
+const CHUNK = 1000;
+async function chunked<T>(ids: string[], fn: (part: string[]) => Promise<T[]>) {
+  const out: T[] = [];
+  for (let i = 0; i < ids.length; i += CHUNK) out.push(...(await fn(ids.slice(i, i + CHUNK))));
+  return out;
+}
+
+/**
+ * Resolves several capabilities in many contexts with a handful of queries (instead of
+ * ~3 per check) and stores the answers in the request's capability cache, so the
+ * `hasCapability` calls that follow are free. Use before checking per course or activity in a loop.
+ */
+export async function prefetchCapabilities(
+  tx: DB,
+  req: Pick<FastifyRequest, "user" | "capabilityCache">,
+  capabilities: Capability[],
+  contextIds: string[],
+) {
+  const user = req.user;
+  const cache = req.capabilityCache;
+  if (!user || !cache) return;
+  const wanted = [...new Set(contextIds)].filter((id) => capabilities.some((c) => !cache.has(`${c}@${id}`)));
+  if (!wanted.length || !capabilities.length) return;
+
+  const ctxRows = await chunked(wanted, (part) => tx.select({ id: contexts.id, path: contexts.path }).from(contexts).where(inArray(contexts.id, part)));
+  const pathOf = new Map(ctxRows.map((r) => [r.id, r.path.split("/").filter(Boolean)]));
+  const allIds = [...new Set([...pathOf.values()].flat())];
+
+  const grants = await chunked(allIds, (part) =>
+    tx
+      .select({ roleId: roleAssignments.roleId, archetype: roles.archetype, contextId: roleAssignments.contextId })
+      .from(roleAssignments)
+      .innerJoin(roles, eq(roles.id, roleAssignments.roleId))
+      .where(and(eq(roleAssignments.userId, user.id), inArray(roleAssignments.contextId, part))),
+  );
+  const roleIds = [...new Set(grants.map((g) => g.roleId))];
+  const [defaults, overrides] = roleIds.length
+    ? await Promise.all([
+        tx.select().from(roleCapabilities).where(and(inArray(roleCapabilities.roleId, roleIds), inArray(roleCapabilities.capability, capabilities))),
+        chunked(allIds, (part) =>
+          tx
+            .select()
+            .from(roleOverrides)
+            .where(and(inArray(roleOverrides.roleId, roleIds), inArray(roleOverrides.contextId, part), inArray(roleOverrides.capability, capabilities))),
+        ),
+      ])
+    : [[], []];
+
+  for (const contextId of wanted) {
+    const path = pathOf.get(contextId);
+    if (!path) continue; // unknown context: leave it to hasCapability (which throws 404)
+    const depthOf = new Map(path.map((id, i) => [id, i]));
+    const held = grants.filter((g) => depthOf.has(g.contextId));
+    const entries: PermissionEntry[] = [
+      ...defaults.map((d) => ({ roleId: d.roleId, capability: d.capability, permission: d.permission, depth: -1 })),
+      ...overrides
+        .filter((o) => depthOf.has(o.contextId))
+        .map((o) => ({ roleId: o.roleId, capability: o.capability, permission: o.permission, depth: depthOf.get(o.contextId)! })),
+    ];
+    const roleGrants = held.map((g) => ({ roleId: g.roleId, archetype: g.archetype as Archetype, assignedDepth: depthOf.get(g.contextId)! }));
+    for (const capability of capabilities) {
+      cache.set(`${capability}@${contextId}`, roleGrants.length ? resolveCapability(capability, roleGrants, entries) : false);
+    }
+  }
+}
+
 /** Throws 403 unless the user has the capability (401 if signed out). */
 export async function requireCapability(
   tx: DB,

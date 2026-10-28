@@ -94,6 +94,24 @@ beforeAll(async () => {
   const tf = await admin.req("POST", "/question-bank/questions", { categoryId: cat.body.id, type: "truefalse", name: "Noble", text: "Helium is a noble gas", data: { correct: true } });
   q.tf = tf.body.id;
   expect((await admin.req("POST", `/quizzes/${act.quiz}/slots`, { questionIds: [q.mc, q.tf] })).status).toBe(200);
+
+  // Learner work, for the user-data restore.
+  // Student's discussion → teacher reply → student reply to the teacher.
+  const disc = await student.req("POST", `/forums/${act.forum}/discussions`, { title: "Valence?", message: "<p>What is valence?</p>" });
+  expect(disc.status, JSON.stringify(disc.body)).toBe(201);
+  const thread = await admin.req("GET", `/forums/${act.forum}/discussions/${disc.body.id}`);
+  const rootPostId = thread.body.posts?.[0]?.id ?? thread.body.root?.id ?? thread.body.firstPostId;
+  expect(rootPostId, JSON.stringify(thread.body).slice(0, 500)).toBeTruthy();
+  const teacherReply = await admin.req("POST", `/forums/${act.forum}/discussions/${disc.body.id}/posts`, { parentId: rootPostId, message: "<p>Outer electrons</p>" });
+  expect(teacherReply.status, JSON.stringify(teacherReply.body)).toBe(201);
+  const followUp = await student.req("POST", `/forums/${act.forum}/discussions/${disc.body.id}/posts`, { parentId: teacherReply.body.id, message: "<p>Thanks!</p>" });
+  expect(followUp.status, JSON.stringify(followUp.body)).toBe(201);
+  const report = await upload(student, "report.pdf", "application/pdf", Buffer.from("%PDF-1.4 lab report"));
+  expect((await student.req("PUT", `/assignments/${act.assignment}/draft`, { fileIds: [report] })).status).toBe(200);
+  expect((await student.req("POST", `/assignments/${act.assignment}/submit`, {})).status).toBe(200);
+  const learnerId = (await student.req("GET", "/auth/me")).body.user.id;
+  expect((await admin.req("POST", `/assignments/${act.assignment}/submissions/${learnerId}/grade`, { grade: 32, feedback: "<p>Good work</p>" })).status).toBe(200);
+  await runJobs();
 });
 
 afterAll(async () => {
@@ -223,6 +241,44 @@ describe("restore", () => {
     expect(participants.body.items.map((p: { email: string }) => p.email)).toContain("learner@default.test");
     // The other organization can't see this restore.
     expect((await admin.req("GET", `/backups/${res.body.id}`)).status).toBe(404);
+  });
+
+  it("restores learners' grades, submissions and forum posts when asked", async () => {
+    const zip = await download(admin, backupFileId);
+    const acme = new Client(env.app, "acme.localhost");
+    expect((await acme.login("admin@acme.test")).status).toBe(200);
+    const fid = await upload(acme, "chem.zip", "application/zip", zip, "acme.localhost");
+    const res = await acme.req("POST", "/backups/restore", { fileId: fid, restoreEnrolments: true, restoreUserData: true });
+    expect(res.status).toBe(201);
+    await runJobs();
+    const row = await acme.req("GET", `/backups/${res.body.id}`);
+    expect(row.body.status, row.body.error).toBe("done");
+    // The teacher's reply is skipped (that admin doesn't exist here); the student's posts are kept.
+    expect(row.body.report.counts).toMatchObject({ submissions: 1, forumDiscussions: 1, forumPosts: 2 });
+    expect(row.body.report.counts.grades).toBeGreaterThanOrEqual(1);
+    expect(row.body.report.warnings.join(" ")).toMatch(/user data record\(s\) were skipped/);
+
+    const newCourse = row.body.courseId as string;
+    const overview = await acme.req("GET", `/courses/${newCourse}`);
+    const labReport = overview.body.sections.flatMap((s: { activities: { id: string; name: string }[] }) => s.activities).find((a: { name: string }) => a.name === "Lab report");
+
+    const learner = new Client(env.app, "acme.localhost");
+    expect((await learner.login("learner@default.test")).status).toBe(200);
+    const mine = await learner.req("GET", `/assignments/${labReport.id}/me`);
+    expect(mine.status).toBe(200);
+    expect(JSON.stringify(mine.body)).toContain("report.pdf");
+    expect(JSON.stringify(mine.body)).toContain("Good work");
+    const grades = await learner.req("GET", `/grades/courses/${newCourse}/me`);
+    expect(JSON.stringify(grades.body)).toContain("32");
+
+    // The follow-up is re-attached to the student's opening post.
+    const forum = overview.body.sections.flatMap((s: { activities: { id: string; name: string }[] }) => s.activities).find((a: { name: string }) => a.name === "Questions");
+    const list = await learner.req("GET", `/forums/${forum.id}/discussions`);
+    const discussion = (list.body.items ?? list.body)[0];
+    const restoredThread = await learner.req("GET", `/forums/${forum.id}/discussions/${discussion.id}`);
+    const text = JSON.stringify(restoredThread.body);
+    expect(text).toContain("Thanks!");
+    expect(text).not.toContain("Outer electrons");
   });
 
   it("rejects archives that are not backups", async () => {

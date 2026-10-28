@@ -151,7 +151,7 @@ export function ActivityForm({
           <CardTitle>{t("activity.typeSettings", "{type} settings", { type: typeLabel })}</CardTitle>
         </CardHeader>
         <CardContent>
-          <ui.SettingsFields value={v.settings} onChange={(settings) => set("settings", settings)} mode={initial ? "edit" : "create"} courseId={courseId} />
+          <ui.SettingsFields value={v.settings} onChange={(settings) => set("settings", settings)} mode={initial ? "edit" : "create"} courseId={courseId} activityId={initial?.id} />
         </CardContent>
       </Card>
 
