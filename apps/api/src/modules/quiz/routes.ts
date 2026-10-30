@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
-import { attemptAnswers, questions, questionVersions, quizAttempts, quizSlots, users, type DB } from "@lms/db";
+import { attemptAnswers, questionCategories, questions, questionVersions, quizAttempts, quizSlots, users, type DB } from "@lms/db";
 import { z } from "zod";
 import { requireUser } from "../../core/auth";
 import { audit } from "../../core/audit";
@@ -15,6 +15,7 @@ import { aggregateGrade, canStartAttempt, facilityIndex, isOverdue, round5, type
 import { presentQuestion, visibilityFor } from "./present";
 import {
   QUESTION_TYPES,
+  zGapselectResponse,
   zMatchingResponse,
   zMultichoiceResponse,
   zNumericalResponse,
@@ -35,6 +36,7 @@ import {
   loadQuiz,
   PREVIEW_ATTEMPT,
   retotalAttempt,
+  randomCandidates,
   slotsOf,
   startAttempt,
   syncQuizGrade,
@@ -52,8 +54,10 @@ const zView = z.discriminatedUnion("type", [
   z.object({ type: z.literal("numerical") }),
   z.object({ type: z.literal("essay"), responseTemplate: z.string().nullable(), minWords: z.number().nullable() }),
   z.object({ type: z.literal("matching"), stems: z.array(z.object({ id: zShortId, text: z.string() })), choices: z.array(z.string()) }),
+  z.object({ type: z.literal("calculated") }),
+  z.object({ type: z.literal("gapselect"), gaps: z.array(z.object({ id: z.string(), options: z.array(z.string()) })) }),
 ]);
-const zResponse = z.union([zMultichoiceResponse, zTruefalseResponse, zTextResponse, zNumericalResponse, zMatchingResponse]).nullable();
+const zResponse = z.union([zMultichoiceResponse, zTruefalseResponse, zTextResponse, zNumericalResponse, zMatchingResponse, zGapselectResponse]).nullable();
 
 const zAttemptQuestion = z.object({
   slotId: zId,
@@ -122,13 +126,16 @@ const zSummary = z.object({
 const zSlot = z.object({
   id: zId,
   position: z.number().int(),
-  questionId: zId,
+  /** null for a random slot. */
+  questionId: zId.nullable(),
   maxMark: z.number(),
   pinnedVersion: z.number().int().nullable(),
-  latestVersion: z.number().int(),
+  latestVersion: z.number().int().nullable(),
   name: z.string(),
-  type: z.enum(QUESTION_TYPES),
+  type: z.enum(QUESTION_TYPES).nullable(),
   deleted: z.boolean(),
+  /** Random slot: the category it draws from and how many questions it can draw from now. */
+  random: z.object({ categoryId: zId, categoryName: z.string(), includeSubcategories: z.boolean(), available: z.number().int() }).nullable(),
 });
 
 const params = z.object({ activityId: zId });
@@ -206,35 +213,49 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
   async function slotList(tx: DB, quizId: string) {
     const slots = await slotsOf(tx, quizId);
     if (!slots.length) return [];
-    const qs = await tx
-      .select()
-      .from(questions)
-      .where(
-        inArray(
-          questions.id,
-          slots.map((s) => s.questionId),
-        ),
-      );
-    const versions = await tx
-      .select()
-      .from(questionVersions)
-      .where(
-        inArray(
-          questionVersions.questionId,
-          qs.map((q) => q.id),
-        ),
-      );
-    return slots.map((s) => {
+    const questionIds = slots.flatMap((s) => (s.questionId ? [s.questionId] : []));
+    const qs = questionIds.length ? await tx.select().from(questions).where(inArray(questions.id, questionIds)) : [];
+    const versions = qs.length
+      ? await tx
+          .select()
+          .from(questionVersions)
+          .where(
+            inArray(
+              questionVersions.questionId,
+              qs.map((q) => q.id),
+            ),
+          )
+      : [];
+    const categoryIds = [...new Set(slots.flatMap((s) => (s.randomCategoryId ? [s.randomCategoryId] : [])))];
+    const categories = categoryIds.length ? await tx.select().from(questionCategories).where(inArray(questionCategories.id, categoryIds)) : [];
+    const out = [];
+    for (const s of slots) {
+      const { randomCategoryId, randomIncludeSubcategories, ...slot } = s;
+      if (randomCategoryId) {
+        const cat = categories.find((c) => c.id === randomCategoryId);
+        const available = (await randomCandidates(tx, randomCategoryId, randomIncludeSubcategories)).length;
+        out.push({
+          ...slot,
+          latestVersion: null,
+          name: `Random question from "${cat?.name ?? "?"}"${randomIncludeSubcategories ? " and its subcategories" : ""}`,
+          type: null,
+          deleted: false,
+          random: { categoryId: randomCategoryId, categoryName: cat?.name ?? "?", includeSubcategories: randomIncludeSubcategories, available },
+        });
+        continue;
+      }
       const q = qs.find((x) => x.id === s.questionId)!;
       const shown = versions.find((v) => v.questionId === q.id && v.version === (s.pinnedVersion ?? q.latestVersion));
-      return {
-        ...s,
+      out.push({
+        ...slot,
         latestVersion: q.latestVersion,
         name: shown?.name ?? "(missing)",
         type: (shown?.type ?? "essay") as QuestionType,
         deleted: !!q.deletedAt,
-      };
-    });
+        random: null,
+      });
+    }
+    return out;
   }
 
   app.get(
@@ -296,6 +317,45 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
       }),
   );
 
+  app.post(
+    "/:activityId/random-slots",
+    {
+      schema: {
+        tags: ["Quiz"],
+        summary: "Add random questions: each attempt draws a different question from the category (appended at the end)",
+        params,
+        body: z.object({
+          categoryId: zId,
+          includeSubcategories: z.boolean().default(false),
+          count: z.number().int().min(1).max(100).default(1),
+          maxMark: z.number().min(0).max(1000).default(1),
+        }),
+        response: { 200: z.array(zSlot) },
+      },
+    },
+    (req) =>
+      req.tenant(async (tx) => {
+        const { quiz, activity } = await loadQuiz(tx, req, req.params.activityId, { capability: "activity:update" });
+        await assertEditable(tx, quiz);
+        const cat = await loadCategory(tx, req, req.body.categoryId, "read", activity.courseId);
+        if (cat.courseId && cat.courseId !== activity.courseId) throw notFound("Category");
+        const existing = await slotsOf(tx, quiz.id);
+        let position = (existing.at(-1)?.position ?? -1) + 1;
+        await tx.insert(quizSlots).values(
+          Array.from({ length: req.body.count }, () => ({
+            organizationId: quiz.organizationId,
+            quizId: quiz.id,
+            questionId: null,
+            randomCategoryId: cat.id,
+            randomIncludeSubcategories: req.body.includeSubcategories,
+            position: position++,
+            maxMark: req.body.maxMark,
+          })),
+        );
+        return slotList(tx, quiz.id);
+      }),
+  );
+
   app.patch(
     "/:activityId/slots/:slotId",
     {
@@ -322,6 +382,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           "Slot",
         );
         if (req.body.pinnedVersion != null) {
+          if (!slot.questionId) throw badRequest("Random questions have no version to pin");
           const [v] = await tx
             .select({ id: questionVersions.id })
             .from(questionVersions)
@@ -575,7 +636,8 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
                 slotId: zId,
                 number: z.number().int(),
                 name: z.string(),
-                type: z.enum(QUESTION_TYPES),
+                /** null for random slots (the question differs per attempt). */
+                type: z.enum(QUESTION_TYPES).nullable(),
                 maxMark: z.number(),
                 responses: z.number().int(),
                 averageMark: z.number().nullable(),

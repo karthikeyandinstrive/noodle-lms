@@ -12,6 +12,7 @@ import { storageFor } from "../../core/storage";
 import { listZip, readZipEntry, safeEntryPath, ZipError, type ZipEntry } from "../interactive/zip";
 import { aggregateGrade, GRADE_METHODS, ratioOf, type GradeMethod, type NormalizedStatus, type PackageRules } from "./cmi";
 import { ManifestError, parseManifest, splitHref, type ManifestInfo, type ScoInfo } from "./manifest";
+import { leafStatus, Sequencer, type ActivityStatus } from "./sequencing";
 
 export type PackageRow = typeof scormPackages.$inferSelect;
 export type AttemptRow = typeof scormAttempts.$inferSelect;
@@ -78,6 +79,41 @@ export function aggregateScos(scoCount: number, tracks: TrackSummary[]): { statu
     scoreMax: scored.length ? scored.reduce((sum, t) => sum + t.scoreMax!, 0) : null,
     totalTimeSeconds: tracks.reduce((sum, t) => sum + t.totalTimeSeconds, 0),
   };
+}
+
+/**
+ * The sequencing engine for a multi-SCO SCORM 2004 package that defines Simple Sequencing, fed
+ * with the attempt's per-SCO tracks; null for packages that navigate freely in order.
+ */
+export function sequencerFor(pkg: PackageRow, scos: ScoInfo[], tracks: { scoId: string; cmi: Record<string, string>; status: string }[]) {
+  const tree = manifestOf(pkg).sequencing?.tree;
+  if (!tree || scos.length < 2) return null;
+  const leaves = new Map<string, ActivityStatus>(tracks.map((t) => [t.scoId, leafStatus(t.cmi, t.status)]));
+  return new Sequencer(tree, leaves, new Set(scos.map((x) => x.identifier)));
+}
+
+export type NavOut = {
+  continue: string | null;
+  previous: string | null;
+  /** True when the package's sequencing rules decide what is available. */
+  sequenced: boolean;
+  items: { identifier: string; title: string; status: string; available: boolean; hidden: boolean }[];
+};
+
+/** Navigation state from the current SCO: sequencing rules when the package has them, else free in order. */
+export function navFor(scos: ScoInfo[], states: Map<string, string>, current: string | null, seq: Sequencer | null): NavOut {
+  const statusOf = (id: string) => states.get(id) ?? "not attempted";
+  if (!seq) {
+    const i = scos.findIndex((x) => x.identifier === current);
+    return {
+      continue: i >= 0 ? (scos[i + 1]?.identifier ?? null) : null,
+      previous: i > 0 ? scos[i - 1]!.identifier : null,
+      sequenced: false,
+      items: scos.map((x) => ({ identifier: x.identifier, title: x.title, status: statusOf(x.identifier), available: true, hidden: false })),
+    };
+  }
+  const nav = seq.nav(current, new Map(scos.map((x) => [x.identifier, x.title])));
+  return { continue: nav.continue, previous: nav.previous, sequenced: true, items: nav.items.map((it) => ({ ...it, status: statusOf(it.identifier) })) };
 }
 
 // ─── Package inspection (pure) ──────────────────────────────────────────────

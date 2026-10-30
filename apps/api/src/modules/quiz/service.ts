@@ -1,6 +1,6 @@
-import { and, asc, count, eq, gt, inArray, lte, max } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, isNull, lte, max } from "drizzle-orm";
 import type { FastifyRequest } from "fastify";
-import { attemptAnswers, questions, questionVersions, quizAttempts, quizSlots, quizzes, type DB } from "@lms/db";
+import { attemptAnswers, questionCategories, questions, questionVersions, quizAttempts, quizSlots, quizzes, type DB } from "@lms/db";
 import { z } from "zod";
 import { registerActivityType, type ActivityRow } from "../../core/activity-types";
 import { badRequest, conflict, forbidden, must, notFound } from "../../core/errors";
@@ -11,7 +11,7 @@ import { zDateInput } from "../../core/schemas";
 import { loadActivity } from "../activities/service";
 import { pushGrade } from "../gradebook/service";
 import { aggregateGrade, attemptDueAt, attemptTotals, canStartAttempt, isOverdue, markFor, type GradeMethod } from "./grading";
-import { gradeResponse, makeVariant, shuffle, type QuestionType } from "./question-types";
+import { gradeResponse, makeVariant, shuffle, type QuestionType, type Variant } from "./question-types";
 
 export type QuizRow = typeof quizzes.$inferSelect;
 export type AttemptRow = typeof quizAttempts.$inferSelect;
@@ -148,6 +148,30 @@ export async function slotsOf(tx: DB, quizId: string) {
   return tx.select().from(quizSlots).where(eq(quizSlots.quizId, quizId)).orderBy(asc(quizSlots.position));
 }
 
+/** A category's id plus, when asked, all its descendants' ids. */
+export async function categoryWithDescendants(tx: DB, categoryId: string, includeSubcategories: boolean) {
+  const ids = [categoryId];
+  if (!includeSubcategories) return ids;
+  const [cat] = await tx.select({ courseId: questionCategories.courseId }).from(questionCategories).where(eq(questionCategories.id, categoryId)).limit(1);
+  if (!cat) return ids;
+  // Categories of the same bank (course or shared), walked breadth-first.
+  const all = await tx
+    .select({ id: questionCategories.id, parentId: questionCategories.parentId })
+    .from(questionCategories)
+    .where(cat.courseId ? eq(questionCategories.courseId, cat.courseId) : isNull(questionCategories.courseId));
+  for (let i = 0; i < ids.length; i++) for (const c of all) if (c.parentId === ids[i] && !ids.includes(c.id)) ids.push(c.id);
+  return ids;
+}
+
+/** Live (not deleted) questions a random slot can draw from. */
+export async function randomCandidates(tx: DB, categoryId: string, includeSubcategories: boolean) {
+  const cats = await categoryWithDescendants(tx, categoryId, includeSubcategories);
+  return tx
+    .select({ id: questions.id, latestVersion: questions.latestVersion })
+    .from(questions)
+    .where(and(inArray(questions.categoryId, cats), isNull(questions.deletedAt)));
+}
+
 /** Answers of an attempt joined with the frozen question version, in the attempt's layout order. */
 export async function answersOf(tx: DB, attempt: AttemptRow) {
   const rows = await tx
@@ -227,7 +251,7 @@ export async function finishAttempt(
 
   const rows = await answersOf(tx, locked);
   for (const { answer, version } of rows) {
-    const { fraction } = gradeResponse(version.type as QuestionType, version.data, answer.response);
+    const { fraction } = gradeResponse(version.type as QuestionType, version.data, answer.response, { variant: answer.variant as Variant, text: version.text });
     await tx
       .update(attemptAnswers)
       .set({ fraction, mark: markFor(fraction, answer.maxMark), needsGrading: fraction === null })
@@ -299,24 +323,35 @@ export async function startAttempt(tx: DB, req: FastifyRequest, quiz: QuizRow, a
   const slots = await slotsOf(tx, quiz.id);
   if (!slots.length) throw conflict("This quiz has no questions yet");
 
+  // Random slots draw a question now, never one already in this attempt.
+  const questionOf = new Map<string, string>();
+  const used = new Set(slots.flatMap((s) => (s.questionId ? [s.questionId] : [])));
+  for (const slot of slots) {
+    if (slot.questionId) {
+      questionOf.set(slot.id, slot.questionId);
+      continue;
+    }
+    const pool = (await randomCandidates(tx, slot.randomCategoryId!, slot.randomIncludeSubcategories)).filter((q) => !used.has(q.id));
+    if (!pool.length) throw conflict("A random question in this quiz has no unused questions left in its category; ask your teacher to fix the quiz");
+    const pick = pool[Math.floor(Math.random() * pool.length)]!;
+    used.add(pick.id);
+    questionOf.set(slot.id, pick.id);
+  }
+
   // Freeze the exact question version per slot.
   const qs = await tx
     .select()
     .from(questions)
-    .where(
-      inArray(
-        questions.id,
-        slots.map((s) => s.questionId),
-      ),
-    );
+    .where(inArray(questions.id, [...new Set(questionOf.values())]));
   const latestOf = new Map(qs.map((q) => [q.id, q.latestVersion]));
   const versionRows = await tx
     .select()
     .from(questionVersions)
     .where(inArray(questionVersions.questionId, [...latestOf.keys()]));
   const versionFor = (slot: (typeof slots)[number]) => {
-    const wanted = slot.pinnedVersion ?? latestOf.get(slot.questionId);
-    return versionRows.find((v) => v.questionId === slot.questionId && v.version === wanted);
+    const questionId = questionOf.get(slot.id)!;
+    const wanted = slot.pinnedVersion ?? latestOf.get(questionId);
+    return versionRows.find((v) => v.questionId === questionId && v.version === wanted);
   };
 
   const layout = quiz.shuffleQuestions ? shuffle(slots.map((s) => s.id)) : slots.map((s) => s.id);

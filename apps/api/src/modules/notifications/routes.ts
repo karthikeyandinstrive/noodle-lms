@@ -1,10 +1,11 @@
 import { and, count, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
-import { enrolments, notificationPreferences, notifications, users } from "@lms/db";
+import { afterCommit, enrolments, notificationPreferences, notifications, users } from "@lms/db";
 import { z } from "zod";
 import { audit } from "../../core/audit";
 import { requireUser } from "../../core/auth";
 import { badRequest } from "../../core/errors";
+import { publishLive } from "../../core/live";
 import { NOTIFICATION_TYPES, notify, type NotificationType } from "../../core/notify";
 import { offset, ok, paged, zDate, zId, zNullableDate, zOk, zPagination } from "../../core/schemas";
 import { loadCourseWith } from "../courses/service";
@@ -102,6 +103,8 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
             ),
           )
           .returning({ id: notifications.id });
+        // Other open tabs refresh their unread badge.
+        if (rows.length) afterCommit(tx, () => publishLive([me.id], { type: "notification" }));
         return { updated: rows.length };
       }),
   );
@@ -236,7 +239,11 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     async (req) => {
       await req.tenant(async (tx) => {
         const me = requireUser(req);
-        await tx.delete(notifications).where(and(eq(notifications.id, req.params.id), eq(notifications.userId, me.id)));
+        const rows = await tx
+          .delete(notifications)
+          .where(and(eq(notifications.id, req.params.id), eq(notifications.userId, me.id)))
+          .returning({ id: notifications.id });
+        if (rows.length) afterCommit(tx, () => publishLive([me.id], { type: "notification" }));
       });
       return ok;
     },

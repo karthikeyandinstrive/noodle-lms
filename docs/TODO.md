@@ -1,6 +1,6 @@
 # TODO / Pending
 
-Last updated 2026-10-28 (branch `feature/initial-lms`).
+Last updated 2026-10-30 (branch `feature/initial-lms`).
 Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3** future scope.
 
 ## Now — next steps
@@ -25,16 +25,16 @@ Step-by-step checks for each item are in [PRODUCTION.md](PRODUCTION.md).
 
 ## P1 — Soon
 
-- [ ] **Manual browser QA of every screen.** Automated E2E covers login, permissions, assignment, grading and notifications. Admin, LTI, SSO, system, search, messages and Spanish were spot-checked; the rest haven't been clicked through.
+- [ ] **Manual browser QA of every screen.** Automated E2E covers login, permissions, assignment, grading and notifications. On 2026-10-30 all 41 main admin, course, activity and learner screens loaded without errors (as admin), and the new features were clicked through: question editor (calculated, gap select), random quiz slots, quiz attempt and review, sequenced SCORM player, live notification badge. Still to click through by hand: every form's edge cases, the learner and teacher views of each activity type, and Spanish.
 - [ ] Native-speaker review of the Spanish translations (2,200+ keys).
 - [ ] Tracing (OpenTelemetry) and log shipping, once a collector/vendor is chosen. Metrics (`/metrics`) and readiness (`/ready`) are done.
 - [ ] **Run the load tests** in `loadtest/` against real PostgreSQL (needs k6) and tune from the results. The scripts and seed are verified against the API; k6 itself hasn't been run.
 
 ## P2 — Improvements
 
-- [ ] SCORM 2004 sequencing rules (pre/post conditions, rollup rules); SCOs can be opened in any order today.
-- [ ] Moodle `.mbz` import of grade setup, random questions, calculated/drag-and-drop question types, and file resources/attachments outside HTML text.
-- [ ] Live updates for notifications too (messages are live; notifications still poll every minute).
+- [ ] SCORM 2004 sequencing, the parts not done yet: shared global objectives / objective maps (cross-SCO prerequisites via `referencedObjective`), time limits, constrained choice and `preventActivation`, rollup considerations. See the header of `scorm/sequencing.ts`.
+- [ ] Moodle `.mbz` import, the parts not done yet: `calculatedmulti`, image drag-and-drop (`ddimageortext`, `ddmarker`), embedded answers (cloze / `multianswer`), scales and outcomes, calculated grade-item formulas, files of HTML-package resources beyond the main file.
+- [ ] A drag-and-drop presentation for gap-select questions (today each gap is an accessible drop-down, which also covers Moodle "drag and drop into text").
 
 ## P3 — Future scope
 
@@ -82,5 +82,10 @@ Step-by-step checks for each item are in [PRODUCTION.md](PRODUCTION.md).
 - [x] **Installable PWA**: manifest, icons, service worker with an offline page (production builds only)
 - [x] Fixed: events emitted right after storing them could skip immediate dispatch (JS vs database clock precision); they now compare with the database clock
 - [x] Fixed: on PostgreSQL 16+, a non-superuser app owner couldn't switch to `lms_app` (every request failed); migrations now grant it explicitly and fail with instructions if they can't
-- [x] **424 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
+- [x] **450 unit/integration tests**, **8 Playwright E2E tests** (desktop + mobile), GitHub Actions CI, Dependabot
 - [x] Pushed to GitHub: `karthikeyandinstrive/noodle-lms` (`main` + `feature/initial-lms`)
+- [x] **SCORM 2004 Simple Sequencing** (`scorm/sequencing.ts`): control modes (choice, choiceExit, flow, forwardOnly), pre/exit/post-condition rules, attempt limits, rollup rules with defaults, measure rollup, `tracked`, sequencing collections; the player follows the rules (locked lessons, Next/Previous by flow, `adl.nav.request` and `adl.nav.request_valid.*`), and the attempt's status is the organization's rolled-up status
+- [x] **Live notification updates** over the same server-sent event stream as messages (bell and lists refresh when a notification arrives or is read in another tab); `afterCommit(tx, fn)` in `@lms/db` runs side effects only after the transaction commits
+- [x] **Random quiz questions** (random slots draw a question from a category, optionally with subcategories, per attempt, never repeating one already in the attempt), included in backup/restore
+- [x] **Calculated questions** (wildcards drawn per attempt or from fixed datasets, safe formula evaluator, relative/nominal/geometric tolerance) and **gap-select questions** (select missing words / drag-and-drop into text), with editors and attempt UI
+- [x] Moodle `.mbz` import of the **gradebook setup** (categories, aggregation, drop lowest, weights, pass grades, hidden/locked, manual items), **file resources** and **folders**, **calculated / calculatedsimple**, **ddwtos / gapselect** and **random questions** (3.x and 4.x)

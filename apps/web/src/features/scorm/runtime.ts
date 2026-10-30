@@ -178,6 +178,9 @@ const ERRORS_2004: Record<string, string> = {
 
 export type CommitFn = (cmi: Cmi, opts: { finish: boolean; keepalive: boolean }) => Promise<void>;
 
+/** Answers adl.nav.request_valid.* queries: `continue`, `previous` or `choice.{target=ID}`; "true", "false" or "unknown". */
+export type NavValidFn = (request: string) => "true" | "false" | "unknown";
+
 type State = "new" | "running" | "terminated";
 
 /** In-memory CMI + SCORM API semantics shared by the 1.2 and 2004 adapters. */
@@ -193,6 +196,7 @@ export class ScormSession {
     initial: Cmi,
     private readonly commitFn: CommitFn | null,
     private readonly onError?: (err: unknown) => void,
+    private readonly navValid?: NavValidFn,
   ) {
     this.values = { ...initial };
   }
@@ -260,6 +264,12 @@ export class ScormSession {
     if (this.state === "new") return this.fail(v12 ? "301" : "122", "");
     if (this.state === "terminated" && !v12) return this.fail("123", "");
     if (!key) return this.fail(v12 ? "201" : "301", "");
+    if (!v12 && key.startsWith("adl.nav.request_valid.")) {
+      const request = key.slice("adl.nav.request_valid.".length);
+      if (!/^(continue|previous|choice\.\{target=[^}]{1,4000}\}|jump\.\{target=[^}]{1,4000}\})$/.test(request)) return this.fail("401", "");
+      return this.ok(this.navValid?.(request) ?? "unknown");
+    }
+    if (!v12 && key === "adl.nav.request") return this.ok(this.values[key] ?? "_none_");
     const children = CHILDREN[this.version][key];
     if (children !== undefined) return this.ok(children);
     if (key.endsWith("._children")) return this.fail(v12 ? "202" : "301", "");

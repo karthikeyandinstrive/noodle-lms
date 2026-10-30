@@ -59,11 +59,35 @@ export async function systemDb(): Promise<DB> {
  */
 export async function withTenant<T>(organizationId: string, fn: (tx: DB) => Promise<T>): Promise<T> {
   const db = await systemDb();
-  return db.transaction(async (tx) => {
+  const hooks: CommitHook[] = [];
+  const result = await db.transaction(async (tx) => {
+    commitHooks.set(tx, hooks);
     await tx.execute(sql`select set_config('app.org_id', ${organizationId}, true)`);
     await tx.execute(sql.raw(`set local role ${APP_ROLE}`));
     return fn(tx as unknown as DB);
   });
+  for (const hook of hooks) {
+    try {
+      await hook();
+    } catch (err) {
+      console.error("afterCommit hook failed", err);
+    }
+  }
+  return result;
+}
+
+type CommitHook = () => unknown;
+const commitHooks = new WeakMap<object, CommitHook[]>();
+
+/**
+ * Runs `fn` once the `withTenant` transaction that owns `tx` has committed (never on rollback).
+ * For side effects that must not run early, such as live-update hints. Failures are logged,
+ * never thrown. Outside a `withTenant` transaction `fn` runs right away.
+ */
+export function afterCommit(tx: DB, fn: CommitHook) {
+  const hooks = commitHooks.get(tx);
+  if (hooks) hooks.push(fn);
+  else void Promise.resolve().then(fn).catch((err: unknown) => console.error("afterCommit hook failed", err));
 }
 
 export async function closeDb() {

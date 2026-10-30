@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -115,6 +117,8 @@ export const questionType = pgEnum("question_type", [
   "numerical",
   "essay",
   "matching",
+  "calculated",
+  "gapselect",
 ]);
 
 export const questions = pgTable("questions", {
@@ -193,15 +197,20 @@ export const quizSlots = pgTable(
     quizId: uuid()
       .notNull()
       .references(() => quizzes.id, { onDelete: "cascade" }),
-    questionId: uuid()
-      .notNull()
-      .references(() => questions.id),
+    /** The question of a fixed slot; null for a random slot. */
+    questionId: uuid().references(() => questions.id),
     /** null = always use the latest version at attempt start */
     pinnedVersion: integer(),
+    /** Random slot: each attempt draws a question from this category (when the attempt starts). */
+    randomCategoryId: uuid().references(() => questionCategories.id),
+    randomIncludeSubcategories: boolean().notNull().default(false),
     position: integer().notNull(),
     maxMark: grade().notNull().default(1),
   },
-  (t) => [index("quiz_slots_quiz_idx").on(t.quizId, t.position)],
+  (t) => [
+    index("quiz_slots_quiz_idx").on(t.quizId, t.position),
+    check("quiz_slots_question_or_random", sql`(${t.questionId} is not null) <> (${t.randomCategoryId} is not null)`),
+  ],
 );
 
 export const attemptStatus = pgEnum("attempt_status", ["in_progress", "finished", "abandoned"]);

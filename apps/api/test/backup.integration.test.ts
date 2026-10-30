@@ -94,6 +94,7 @@ beforeAll(async () => {
   const tf = await admin.req("POST", "/question-bank/questions", { categoryId: cat.body.id, type: "truefalse", name: "Noble", text: "Helium is a noble gas", data: { correct: true } });
   q.tf = tf.body.id;
   expect((await admin.req("POST", `/quizzes/${act.quiz}/slots`, { questionIds: [q.mc, q.tf] })).status).toBe(200);
+  expect((await admin.req("POST", `/quizzes/${act.quiz}/random-slots`, { categoryId: cat.body.id, maxMark: 3 })).status).toBe(200);
 
   // Learner work, for the user-data restore.
   // Student's discussion → teacher reply → student reply to the teacher.
@@ -188,7 +189,7 @@ describe("restore", () => {
     expect(row.body.status, row.body.error).toBe("done");
     restoredId = row.body.courseId;
     expect(restoredId).not.toBe(courseId);
-    expect(row.body.report.counts).toMatchObject({ activities: 9, questions: 2, quizSlots: 3, sections: 2, groups: 1 });
+    expect(row.body.report.counts).toMatchObject({ activities: 9, questions: 2, quizSlots: 4, sections: 2, groups: 1 });
     expect(row.body.report.unsupported.join(" ")).toMatch(/User data/);
 
     const overview = await admin.req("GET", `/courses/${restoredId}`);
@@ -222,11 +223,13 @@ describe("restore", () => {
     expect(slots.body.slots.map((s: { name: string; maxMark: number; latestVersion: number }) => [s.name, s.maxMark, s.latestVersion])).toEqual([
       ["Hydrogen v2", 2, 2],
       ["Noble", 1, 1],
+      ['Random question from "Atoms"', 3, null],
     ]);
     for (const s of slots.body.slots) expect([q.mc, q.tf]).not.toContain(s.questionId);
-    // Questions live in the new course's bank.
+    // Questions live in the new course's bank; the random slot draws from the restored category.
     const cats = await admin.req("GET", `/question-bank/categories?courseId=${restoredId}`);
     const restoredCat = cats.body.find((c: { courseId: string | null }) => c.courseId === restoredId);
+    expect(slots.body.slots[2].random).toMatchObject({ categoryId: restoredCat.id, available: 2 });
     expect(restoredCat).toMatchObject({ name: "Atoms", questionCount: 2 });
     expect(restoredCat.id).not.toBe(q.cat);
 
@@ -353,6 +356,22 @@ const MOODLE_QUESTIONS = `<?xml version="1.0" encoding="UTF-8"?><question_catego
 </question_categories>`;
 
 const DIAGRAM_HASH = "3f786850e387550fdab836ed7e6dc881de23001b";
+const HANDOUT_HASH = "aaaa850e387550fdab836ed7e6dc881de23001b0";
+const NOTES_HASH = "bbbb850e387550fdab836ed7e6dc881de23001b0";
+const SLIDES_HASH = "cccc850e387550fdab836ed7e6dc881de23001b0";
+
+/** Moodle gradebook: natural root, a weighted-mean category with drop lowest, activity and manual items. */
+const MOODLE_GRADEBOOK = `<?xml version="1.0" encoding="UTF-8"?><gradebook><grade_categories>
+  <grade_category id="20"><parent>$@NULL@$</parent><fullname>?</fullname><aggregation>13</aggregation><droplow>0</droplow><keephigh>0</keephigh></grade_category>
+  <grade_category id="21"><parent>20</parent><fullname>Assessments</fullname><aggregation>10</aggregation><droplow>1</droplow><keephigh>0</keephigh></grade_category>
+</grade_categories><grade_items>
+  <grade_item id="30"><categoryid>$@NULL@$</categoryid><itemtype>course</itemtype><iteminstance>20</iteminstance><gradetype>1</gradetype><grademax>100</grademax><grademin>0</grademin><gradepass>60</gradepass><sortorder>1</sortorder><hidden>0</hidden><locked>0</locked></grade_item>
+  <grade_item id="31"><categoryid>$@NULL@$</categoryid><itemname>$@NULL@$</itemname><itemtype>category</itemtype><iteminstance>21</iteminstance><gradetype>1</gradetype><grademax>100</grademax><grademin>0</grademin><sortorder>2</sortorder><hidden>0</hidden><locked>0</locked></grade_item>
+  <grade_item id="32"><categoryid>21</categoryid><itemname>Essay</itemname><itemtype>mod</itemtype><itemmodule>assign</itemmodule><iteminstance>3</iteminstance><itemnumber>0</itemnumber><gradetype>1</gradetype><grademax>50</grademax><grademin>0</grademin><gradepass>25</gradepass><aggregationcoef>2</aggregationcoef><sortorder>3</sortorder><hidden>0</hidden><locked>1</locked></grade_item>
+  <grade_item id="33"><categoryid>21</categoryid><itemname>Test</itemname><itemtype>mod</itemtype><itemmodule>quiz</itemmodule><iteminstance>5</iteminstance><itemnumber>0</itemnumber><gradetype>1</gradetype><grademax>10</grademax><grademin>0</grademin><aggregationcoef>1</aggregationcoef><sortorder>4</sortorder><hidden>1</hidden><locked>0</locked></grade_item>
+  <grade_item id="34"><categoryid>20</categoryid><itemname>Participation</itemname><itemtype>manual</itemtype><gradetype>1</gradetype><grademax>10</grademax><grademin>0</grademin><sortorder>5</sortorder><hidden>0</hidden><locked>0</locked></grade_item>
+  <grade_item id="35"><categoryid>20</categoryid><itemname>Glossary</itemname><itemtype>mod</itemtype><itemmodule>glossary</itemmodule><iteminstance>7</iteminstance><itemnumber>0</itemnumber><gradetype>1</gradetype><grademax>10</grademax><sortorder>6</sortorder></grade_item>
+</grade_items></gradebook>`;
 
 function mbz() {
   const activity = (id: number, mod: string, section: number, title: string) =>
@@ -369,10 +388,12 @@ function mbz() {
         activity(15, "quiz", 2, "Test"),
         activity(16, "label", 1, "Note"),
         activity(17, "glossary", 2, "Terms"),
+        activity(18, "resource", 1, "Handout"),
+        activity(19, "folder", 1, "Materials"),
       ].join("")}</activities><sections><section><sectionid>1</sectionid><title>0</title><directory>sections/section_1</directory></section><section><sectionid>2</sectionid><title>1</title><directory>sections/section_2</directory></section></sections><course><courseid>5</courseid><directory>course</directory></course></contents></information></moodle_backup>`,
     ],
     ["course/course.xml", `<course id="5"><shortname>PHY</shortname><fullname>Moodle Physics</fullname><summary>&lt;p&gt;Forces&lt;/p&gt;</summary><format>weeks</format><startdate>0</startdate><visible>1</visible></course>`],
-    ["sections/section_1/section.xml", `<section id="1"><number>0</number><name>$@NULL@$</name><summary></summary><sequence>11,16,12</sequence><visible>1</visible></section>`],
+    ["sections/section_1/section.xml", `<section id="1"><number>0</number><name>$@NULL@$</name><summary></summary><sequence>11,16,12,18,19</sequence><visible>1</visible></section>`],
     ["sections/section_2/section.xml", `<section id="2"><number>1</number><name>Mechanics</name><summary>&lt;p&gt;Newton&lt;/p&gt;</summary><sequence>13,14,15,17</sequence><visible>1</visible></section>`],
     ["activities/page_11/module.xml", module(11, "page")],
     [
@@ -381,9 +402,26 @@ function mbz() {
     ],
     [
       "files.xml",
-      `<files><file id="1"><contenthash>${DIAGRAM_HASH}</contenthash><contextid>57</contextid><component>mod_page</component><filearea>content</filearea><itemid>0</itemid><filepath>/</filepath><filename>forces diagram.png</filename><filesize>11</filesize><mimetype>image/png</mimetype></file><file id="2"><contenthash>da39a3ee5e6b4b0d3255bfef95601890afd80709</contenthash><contextid>57</contextid><component>mod_page</component><filearea>content</filearea><itemid>0</itemid><filepath>/</filepath><filename>.</filename></file></files>`,
+      `<files><file id="1"><contenthash>${DIAGRAM_HASH}</contenthash><contextid>57</contextid><component>mod_page</component><filearea>content</filearea><itemid>0</itemid><filepath>/</filepath><filename>forces diagram.png</filename><filesize>11</filesize><mimetype>image/png</mimetype></file><file id="2"><contenthash>da39a3ee5e6b4b0d3255bfef95601890afd80709</contenthash><contextid>57</contextid><component>mod_page</component><filearea>content</filearea><itemid>0</itemid><filepath>/</filepath><filename>.</filename></file>${[
+        [3, HANDOUT_HASH, 60, "mod_resource", "/", "handout.pdf", "application/pdf", 1],
+        [4, NOTES_HASH, 61, "mod_folder", "/week 1/", "notes.txt", "text/plain", 0],
+        [5, SLIDES_HASH, 61, "mod_folder", "/", "slides.pdf", "application/pdf", 0],
+      ]
+        .map(
+          ([id, hash, ctx, component, fp, name, mime, sort]) =>
+            `<file id="${id}"><contenthash>${hash}</contenthash><contextid>${ctx}</contextid><component>${component}</component><filearea>content</filearea><itemid>0</itemid><filepath>${fp}</filepath><filename>${name}</filename><filesize>5</filesize><mimetype>${mime}</mimetype><sortorder>${sort}</sortorder></file>`,
+        )
+        .join("")}</files>`,
     ],
     [`files/${DIAGRAM_HASH.slice(0, 2)}/${DIAGRAM_HASH}`, "PNG-BYTES!!"],
+    [`files/${HANDOUT_HASH.slice(0, 2)}/${HANDOUT_HASH}`, "%PDF1"],
+    [`files/${NOTES_HASH.slice(0, 2)}/${NOTES_HASH}`, "notes"],
+    [`files/${SLIDES_HASH.slice(0, 2)}/${SLIDES_HASH}`, "%PDF2"],
+    ["activities/resource_18/module.xml", module(18, "resource")],
+    ["activities/resource_18/resource.xml", `<activity id="8" moduleid="18" modulename="resource" contextid="60"><resource id="8"><name>Handout</name><intro></intro><display>4</display></resource></activity>`],
+    ["activities/folder_19/module.xml", module(19, "folder")],
+    ["activities/folder_19/folder.xml", `<activity id="9" moduleid="19" modulename="folder" contextid="61"><folder id="9"><name>Materials</name><intro>&lt;p&gt;Week files&lt;/p&gt;</intro></folder></activity>`],
+    ["gradebook.xml", MOODLE_GRADEBOOK],
     ["activities/url_12/module.xml", module(12, "url")],
     ["activities/url_12/url.xml", `<activity id="2" moduleid="12" modulename="url"><url id="2"><name>Docs</name><intro></intro><externalurl>https://example.org/docs</externalurl></url></activity>`],
     ["activities/assign_13/module.xml", module(13, "assign")],
@@ -394,7 +432,7 @@ function mbz() {
     ["activities/forum_14/module.xml", module(14, "forum", 0)],
     ["activities/forum_14/forum.xml", `<activity id="4" moduleid="14" modulename="forum"><forum id="4"><type>qanda</type><name>Talk</name><intro>Discuss</intro></forum></activity>`],
     ["activities/quiz_15/module.xml", module(15, "quiz")],
-    ["activities/quiz_15/quiz.xml", `<activity id="5" moduleid="15" modulename="quiz"><quiz id="5"><name>Test</name><intro></intro><timelimit>600</timelimit><attempts_number>2</attempts_number><grademethod>3</grademethod><grade>10</grade><question_instances><question_instance id="1"><slot>1</slot><maxmark>2.0000000</maxmark><question_reference id="1"><questionbankentryid>100</questionbankentryid><version>$@NULL@$</version></question_reference></question_instance><question_instance id="2"><slot>2</slot><maxmark>1.0000000</maxmark><question_reference id="2"><questionbankentryid>101</questionbankentryid></question_reference></question_instance><question_instance id="3"><slot>3</slot><maxmark>1.0000000</maxmark><question_reference id="3"><questionbankentryid>102</questionbankentryid></question_reference></question_instance></question_instances></quiz></activity>`],
+    ["activities/quiz_15/quiz.xml", `<activity id="5" moduleid="15" modulename="quiz"><quiz id="5"><name>Test</name><intro></intro><timelimit>600</timelimit><attempts_number>2</attempts_number><grademethod>3</grademethod><grade>10</grade><question_instances><question_instance id="1"><slot>1</slot><maxmark>2.0000000</maxmark><question_reference id="1"><questionbankentryid>100</questionbankentryid><version>$@NULL@$</version></question_reference></question_instance><question_instance id="2"><slot>2</slot><maxmark>1.0000000</maxmark><question_reference id="2"><questionbankentryid>101</questionbankentryid></question_reference></question_instance><question_instance id="3"><slot>3</slot><maxmark>1.0000000</maxmark><question_reference id="3"><questionbankentryid>102</questionbankentryid></question_reference></question_instance><question_instance id="4"><slot>4</slot><maxmark>1.0000000</maxmark><question_set_reference id="4"><filtercondition>{"questioncategoryid":"8","includingsubcategories":"0"}</filtercondition></question_set_reference></question_instance></question_instances></quiz></activity>`],
     ["questions.xml", MOODLE_QUESTIONS],
     ["activities/label_16/module.xml", module(16, "label")],
     ["activities/label_16/label.xml", `<activity id="6" moduleid="16" modulename="label"><label id="6"><name>Note</name><intro>&lt;p&gt;Bring a calculator&lt;/p&gt;</intro></label></activity>`],
@@ -412,14 +450,20 @@ describe("Moodle .mbz import", () => {
     expect(row.body.status, row.body.error).toBe("done");
     expect(row.body.report.source.format).toBe("moodle");
     expect(row.body.report.unsupported.join(" ")).toMatch(/glossary/);
-    expect(row.body.report.unsupported.join(" ")).toMatch(/1 Moodle question skipped \(type "calculated"\)/);
+    expect(row.body.report.unsupported.join(" ")).toMatch(/1 Moodle question skipped \(no answer worth 100%\)/);
     expect(row.body.report.warnings.join(" ")).toMatch(/Quiz "Test": 1 question slot/);
     expect(row.body.report.counts.questions).toBe(2);
 
     const overview = await admin.req("GET", `/courses/${row.body.courseId}`);
     expect(overview.body.course).toMatchObject({ fullname: "Moodle Physics", shortname: "PHY", format: "weeks" });
     expect(overview.body.sections.map((s: { title: string }) => s.title)).toEqual(["General", "Mechanics"]);
-    expect(overview.body.sections[0].activities.map((a: { name: string; type: string }) => `${a.type}:${a.name}`)).toEqual(["page:Intro", "page:Note", "url:Docs"]);
+    expect(overview.body.sections[0].activities.map((a: { name: string; type: string }) => `${a.type}:${a.name}`)).toEqual([
+      "page:Intro",
+      "page:Note",
+      "url:Docs",
+      "file:Handout",
+      "page:Materials",
+    ]);
     const s2 = overview.body.sections[1].activities;
     expect(s2.map((a: { type: string }) => a.type)).toEqual(["assignment", "forum", "quiz"]);
     expect(s2[1].visible).toBe(false);
@@ -434,7 +478,7 @@ describe("Moodle .mbz import", () => {
     const fileId = /\/files\/([0-9a-f-]{36})/.exec(intro.body.settings.content)?.[1];
     expect(fileId, intro.body.settings.content).toBeTruthy();
     expect((await download(admin, fileId!)).toString()).toBe("PNG-BYTES!!");
-    expect(row.body.report.counts.files).toBe(1);
+    expect(row.body.report.counts.files).toBe(4); // the diagram + handout + two folder files
     expect(row.body.report.warnings.join(" ")).toMatch(/1 embedded Moodle file\(s\) were not in the backup/);
 
     // The question bank and the quiz's slots came across.
@@ -442,7 +486,34 @@ describe("Moodle .mbz import", () => {
     expect(slots.body.slots.map((x: { name: string; maxMark: number; type: string }) => [x.name, x.maxMark, x.type])).toEqual([
       ["Newton", 2, "multichoice"],
       ["Mass", 1, "truefalse"],
+      ['Random question from "Mechanics questions"', 1, null],
     ]);
+    expect(slots.body.slots[2].random).toMatchObject({ categoryName: "Mechanics questions", includeSubcategories: false, available: 2 });
+
+    // File resources and folders came across with their files.
+    const [, , , handout, folder] = overview.body.sections[0].activities;
+    const file = await admin.req("GET", `/activities/${handout.id}`);
+    expect(file.body.settings).toMatchObject({ filename: "handout.pdf", display: "download" });
+    expect((await download(admin, file.body.settings.fileId)).toString()).toBe("%PDF1");
+    const page = await admin.req("GET", `/activities/${folder.id}`);
+    expect(page.body.settings.content).toContain("Week files");
+    expect(page.body.settings.content).toContain("week 1/notes.txt");
+    const links = [...page.body.settings.content.matchAll(/\/files\/([0-9a-f-]{36})/g)].map((x) => x[1]);
+    expect(links).toHaveLength(2);
+    expect((await download(admin, links[0]!)).toString()).toBe("%PDF2"); // sorted by path: /slides.pdf first
+    expect(row.body.report.warnings.join(" ")).toMatch(/Folder "Materials" was imported as a page linking its 2 file/);
+
+    // The gradebook setup: categories, aggregation, weights, pass grades, hidden/locked flags, manual items.
+    const setup = await admin.req("GET", `/grades/courses/${row.body.courseId}/setup`);
+    expect(setup.status).toBe(200);
+    const cat = setup.body.categories.find((c: { name: string }) => c.name === "Assessments");
+    expect(cat).toMatchObject({ aggregation: "weighted_mean", dropLowest: 1 });
+    expect(setup.body.categories.find((c: { parentId: string | null }) => !c.parentId)).toMatchObject({ aggregation: "sum" });
+    const item = (name: string) => setup.body.items.find((i: { name: string }) => i.name === name);
+    expect(item("Essay")).toMatchObject({ gradeMax: 50, gradePass: 25, weight: 2, locked: true, categoryId: cat.id });
+    expect(item("Test")).toMatchObject({ gradeMax: 10, hidden: true, categoryId: cat.id });
+    expect(item("Participation")).toMatchObject({ type: "manual", gradeMax: 10 });
+    expect(setup.body.items.find((i: { type: string }) => i.type === "course")).toMatchObject({ gradePass: 60 });
     const cats = await admin.req("GET", `/question-bank/categories?courseId=${row.body.courseId}`);
     expect(cats.body.map((c: { name: string }) => c.name)).toEqual(expect.arrayContaining(["top", "Mechanics questions"]));
   });

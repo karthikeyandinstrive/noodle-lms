@@ -84,18 +84,25 @@ e2e/                      Playwright specs + server start script
   `remove` hook, which runs before an activity or its course is deleted. Use `queuePackageCleanup`.
 - **Permission checks in loops**: call `prefetchCapabilities(tx, req, caps, contextIds)` first.
   It fills the request's capability cache in a few queries, so the `hasCapability` calls after it are free.
-- **Live updates** (`core/live.ts`): call `publishLive(userIds, event)` after the change commits. Events are
-  hints to refetch, never data. The service worker (`apps/web/public/sw.js`) registers in production only and
+- **Live updates** (`core/live.ts`): call `publishLive(userIds, event)` after the change commits; inside a
+  transaction use `afterCommit(tx, () => publishLive(...))` (from `@lms/db`), which never runs on rollback.
+  `notify()` already does this for notifications. Events are hints to refetch, never data. The service worker (`apps/web/public/sw.js`) registers in production only and
   never caches `/api`; bump `VERSION` in it when its caching changes.
 - **SCORM**: single-SCO packages keep the CMI on `scorm_attempts`; multi-SCO packages use
-  `scorm_sco_tracks` (one row per SCO), and the attempt row then holds the rolled-up result.
+  `scorm_sco_tracks` (one row per SCO), and the attempt row then holds the rolled-up result. Packages with
+  IMS Simple Sequencing keep their activity tree in `manifest.sequencing.tree`; `scorm/sequencing.ts` (pure,
+  unit-tested) decides availability, Next/Previous and the rolled-up status.
+- **Quiz questions**: question types live in `quiz/question-types.ts` (data schema, grading, learner view).
+  Grading and display take the attempt's `variant` (shuffles, calculated values) and the question text
+  (gap-select gaps are `[[n]]` in the text). A quiz slot is either a question or a random category draw
+  (`quiz_slots.random_category_id`); random picks are frozen on `attempt_answers` when the attempt starts.
 - Missing **or forbidden** resources return 404, so their existence isn't leaked. Keep that pattern.
 
-## Current state (2026-10-28)
+## Current state (2026-10-30)
 
 - Branch `feature/initial-lms` is pushed to https://github.com/karthikeyandinstrive/noodle-lms
   (`main` holds only the Create Next App scaffold). **The PR is not opened yet**; opening it runs CI.
-- 424 unit/integration tests and 8 E2E tests pass, on embedded PGlite and on real PostgreSQL 18 as a
+- 450 unit/integration tests and 8 E2E tests pass, on embedded PGlite and on real PostgreSQL 18 as a
   non-superuser (`npm run test:postgres`). Typecheck, lint and the production build are clean.
   `npm audit` reports no high or critical findings.
 - **Never tested against real services:** the Docker Compose stack, Stripe/Razorpay, real SSO IdPs,

@@ -30,13 +30,16 @@ import {
   attemptsOf,
   contentToken,
   manifestOf,
+  navFor,
   packageOf,
   packageRules,
   scoRules,
   scosOf,
+  sequencerFor,
   verifyContentToken,
   type AttemptRow,
 } from "./service";
+import { rootStatus } from "./sequencing";
 
 const activityParam = z.object({ activityId: zId });
 
@@ -60,7 +63,22 @@ async function trackFor(tx: DB, organizationId: string, attemptId: string, scoId
   return row!;
 }
 
-const zScoState = z.object({ identifier: z.string(), title: z.string(), status: z.string() });
+const zScoState = z.object({
+  identifier: z.string(),
+  title: z.string(),
+  status: z.string(),
+  /** The learner may open it now (sequencing rules; always true for packages without them). */
+  available: z.boolean(),
+  /** Hidden from the lesson menu by the package. */
+  hidden: z.boolean(),
+});
+const zNav = z.object({
+  /** SCO that "Next" (continue) delivers, null when not allowed. */
+  continue: z.string().nullable(),
+  /** SCO that "Previous" delivers, null when not allowed. */
+  previous: z.string().nullable(),
+  sequenced: z.boolean(),
+});
 
 /**
  * Package content is served same-origin with the player page (required by the SCORM API
@@ -230,8 +248,12 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         body: z
           .object({
             newAttempt: z.boolean().default(false),
-            /** SCO to launch (multi-SCO packages). Defaults to the first unfinished one. */
+            /** SCO to launch (multi-SCO packages, a "choice" request). Defaults to the first unfinished one. */
             sco: z.string().max(255).optional(),
+            /** Flow request relative to `from` (multi-SCO packages): deliver the next/previous SCO. */
+            request: z.enum(["continue", "previous"]).optional(),
+            /** The SCO the learner is leaving (checked against choice and flow rules). */
+            from: z.string().max(255).optional(),
           })
           .default({ newAttempt: false }),
         response: {
@@ -246,6 +268,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
             /** The SCO launched, and every SCO with its status in this attempt. */
             sco: z.string(),
             scos: z.array(zScoState),
+            nav: zNav,
           }),
         },
       },
@@ -266,19 +289,23 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         const requested = req.body.sco ? scos.find((x) => x.identifier === req.body.sco) : undefined;
         if (req.body.sco && !requested) throw badRequest("Unknown SCO");
         const token = contentToken(me.id, activity.id, pkg.storagePrefix);
-        const launchOf = (sco: ScoInfo, states: Map<string, string>) => ({
-          version: pkg.version,
-          contentUrl: contentUrlFor(activity.id, token, sco.href),
-          multiSco,
-          sco: sco.identifier,
-          scos: scos.map((x) => ({ identifier: x.identifier, title: x.title, status: states.get(x.identifier) ?? "not attempted" })),
-        });
+        const launchOf = (sco: ScoInfo, states: Map<string, string>, seq: ReturnType<typeof sequencerFor> = null) => {
+          const { items, ...nav } = navFor(scos, states, sco.identifier, seq);
+          return { version: pkg.version, contentUrl: contentUrlFor(activity.id, token, sco.href), multiSco, sco: sco.identifier, scos: items, nav };
+        };
+        const flowTarget = (from: string | undefined, request: "continue" | "previous" | undefined) => {
+          if (!request) return undefined;
+          if (!from || !scos.some((x) => x.identifier === from)) throw badRequest("Name the SCO you are leaving");
+          return from;
+        };
         // Launch settings of the SCO (mastery score, launch data …) over the package defaults.
         const scoManifest = (sco: ScoInfo) => ({ ...manifest, ...sco });
 
-        // Editors without scorm:attempt preview in browse mode: nothing is recorded.
+        // Editors without scorm:attempt preview in browse mode: nothing is recorded, navigation is free.
         if (!canAttempt) {
-          const sco = requested ?? scos[0]!;
+          const from = flowTarget(req.body.from, req.body.request);
+          const flowed = from ? navFor(scos, new Map(), from, null)[req.body.request!] : null;
+          const sco = requested ?? scos.find((x) => x.identifier === flowed) ?? scos[0]!;
           return {
             ...launchOf(sco, new Map()),
             attemptId: null,
@@ -324,16 +351,30 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           };
         }
 
-        const states = new Map((await tracksOf(tx, current.id)).map((t) => [t.scoId, t.status]));
+        const tracks = await tracksOf(tx, current.id);
+        const states = new Map(tracks.map((t) => [t.scoId, t.status]));
         const finished = (id: string) => FINISHED.includes((states.get(id) ?? "not attempted") as NormalizedStatus);
-        const sco = requested ?? scos.find((x) => !finished(x.identifier)) ?? scos[0]!;
+        const seq = sequencerFor(pkg, scos, tracks);
+        const from = flowTarget(req.body.from, req.body.request) ?? (req.body.from && scos.some((x) => x.identifier === req.body.from) ? req.body.from : null);
+        let targetId: string | null | undefined;
+        if (req.body.request) {
+          targetId = navFor(scos, states, from, seq)[req.body.request];
+          if (!targetId) throw conflict(req.body.request === "continue" ? "There is no next lesson available" : "There is no previous lesson available");
+        } else if (requested) {
+          if (seq && requested.identifier !== from && !seq.canChoose(requested.identifier, from)) throw conflict("This lesson is not available yet");
+          targetId = requested.identifier;
+        } else {
+          targetId = seq ? seq.start((id) => !finished(id)) : (scos.find((x) => !finished(x.identifier)) ?? scos[0]!).identifier;
+          if (!targetId) throw conflict("No lesson in this package is available to you");
+        }
+        const sco = scos.find((x) => x.identifier === targetId)!;
         const track = await trackFor(tx, req.org.id, current.id, sco.identifier);
         const r = resume(track.cmi, track.totalTimeSeconds);
         if (r.changed) {
           await tx.update(scormScoTracks).set({ cmi: r.cmi, totalTimeSeconds: r.totalSeconds, updatedAt: new Date() }).where(eq(scormScoTracks.id, track.id));
         }
         return {
-          ...launchOf(sco, states),
+          ...launchOf(sco, states, seq),
           attemptId: current.id,
           attempt: current.attempt,
           mode,
@@ -366,6 +407,14 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
             scoreMax: z.number().nullable(),
             totalTimeSeconds: z.number().int(),
             rejected: z.array(z.object({ key: z.string(), reason: z.string() })),
+            /** Multi-SCO packages: lesson states and navigation after this commit. */
+            scos: z.array(zScoState).optional(),
+            nav: zNav.optional(),
+            /**
+             * When `finish` ends a sequenced SCO: the SCO the package's rules (or the SCO's
+             * adl.nav.request) deliver next, "exit" to end the attempt, or null to let the learner choose.
+             */
+            next: z.string().nullable().optional(),
           }),
         },
       },
@@ -388,7 +437,9 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         // Whitelist + validate; invalid elements are dropped (and reported) so valid progress is never lost.
         const problems = validateCmi(pkg.version, req.body.cmi);
         const bad = new Set(problems.map((p) => p.key));
-        const accepted: Cmi = Object.fromEntries(Object.entries(req.body.cmi).filter(([k]) => !bad.has(k)));
+        // adl.nav.request is a one-off request from the SCO, not progress: used below, never stored.
+        const navRequest = req.body.cmi["adl.nav.request"];
+        const accepted: Cmi = Object.fromEntries(Object.entries(req.body.cmi).filter(([k]) => !bad.has(k) && k !== "adl.nav.request"));
         const scos = scosOf(pkg);
         const merge = (stored: Cmi, storedSeconds: number, rules: ReturnType<typeof packageRules>) => {
           let cmi = mergeCmi(pkg.version, stored, accepted);
@@ -399,6 +450,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
 
         let saved: AttemptRow;
         let scoStatus: string;
+        let navOut: { scos: ReturnType<typeof navFor>["items"]; nav: Omit<ReturnType<typeof navFor>, "items">; next?: string | null } | undefined;
         if (scos.length > 1) {
           const sco = scos.find((x) => x.identifier === req.body.sco);
           if (!sco) throw badRequest("Name the SCO these values belong to");
@@ -409,7 +461,17 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
             .set({ cmi: r.cmi, status: r.status, scoreRaw: r.score?.raw ?? null, scoreMax: r.score?.max ?? null, totalTimeSeconds: r.totalSeconds, updatedAt: new Date() })
             .where(eq(scormScoTracks.id, track.id));
           scoStatus = r.status;
-          const total = aggregateScos(scos.length, await tracksOf(tx, attempt.id));
+          const tracks = await tracksOf(tx, attempt.id);
+          const total = aggregateScos(scos.length, tracks);
+          // Sequenced packages: the attempt's status is the organization's rolled-up status.
+          const seq = sequencerFor(pkg, scos, tracks);
+          if (seq) total.status = rootStatus(seq.rootStatus);
+          const { items, ...nav } = navFor(scos, new Map(tracks.map((t) => [t.scoId, t.status])), sco.identifier, seq);
+          navOut = { scos: items, nav };
+          if (seq && req.body.finish) {
+            const request = navRequest === "continue" || navRequest === "previous" ? navRequest : null;
+            navOut.next = seq.afterExit(sco.identifier, request);
+          }
           [saved] = (await tx
             .update(scormAttempts)
             .set({ status: total.status, scoreRaw: total.scoreRaw, scoreMax: total.scoreMax, totalTimeSeconds: total.totalTimeSeconds, updatedAt: new Date() })
@@ -440,7 +502,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
         const done = (s: string) => s === "completed" || s === "passed";
         if (done(status) && !done(attempt.status)) await emitInTx(tx, "activity.submitted", base);
 
-        return { status, scoStatus, scoreRaw: saved.scoreRaw, scoreMax: saved.scoreMax, totalTimeSeconds: totalSeconds, rejected: problems };
+        return { status, scoStatus, scoreRaw: saved.scoreRaw, scoreMax: saved.scoreMax, totalTimeSeconds: totalSeconds, rejected: problems, ...navOut };
       }),
   );
 

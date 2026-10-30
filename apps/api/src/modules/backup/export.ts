@@ -46,6 +46,7 @@ import {
   type DB,
 } from "@lms/db";
 import { readFileBody } from "../../core/files";
+import { categoryWithDescendants } from "../quiz/service";
 import { BACKUP_FORMAT, BACKUP_VERSION, MAX_ARCHIVE_BYTES, type BackupActivity, type BackupCourse, type BackupFile, type BackupManifest } from "./format";
 import { ZipWriter } from "./zip-writer";
 
@@ -163,7 +164,17 @@ export async function buildCourseBackup(
         data = r
           ? {
               ...pick(r, TYPE_COLUMNS.quiz),
-              slots: slots.filter((s) => s.quizId === r.id).map((s) => ({ id: s.id, questionId: s.questionId, pinnedVersion: s.pinnedVersion, position: s.position, maxMark: s.maxMark })),
+              slots: slots
+                .filter((s) => s.quizId === r.id)
+                .map((s) => ({
+                  id: s.id,
+                  questionId: s.questionId,
+                  pinnedVersion: s.pinnedVersion,
+                  randomCategoryId: s.randomCategoryId,
+                  randomIncludeSubcategories: s.randomIncludeSubcategories,
+                  position: s.position,
+                  maxMark: s.maxMark,
+                })),
             }
           : null;
         break;
@@ -239,14 +250,24 @@ export async function buildCourseBackup(
   const courseQuestions = catIds.size
     ? await tx.select().from(questions).where(and(inArray(questions.categoryId, [...catIds]), isNull(questions.deletedAt)))
     : [];
-  const questionIds = new Set([...courseQuestions.map((q) => q.id), ...slots.map((s) => s.questionId)]);
+  // Random slots: the questions they can draw from (shared categories included) travel with the course.
+  const randomCats = new Set<string>();
+  for (const s of slots) if (s.randomCategoryId) for (const id of await categoryWithDescendants(tx, s.randomCategoryId, s.randomIncludeSubcategories)) randomCats.add(id);
+  const randomQuestions = randomCats.size
+    ? await tx.select({ id: questions.id }).from(questions).where(and(inArray(questions.categoryId, [...randomCats]), isNull(questions.deletedAt)))
+    : [];
+  const questionIds = new Set([
+    ...courseQuestions.map((q) => q.id),
+    ...slots.flatMap((s) => (s.questionId ? [s.questionId] : [])),
+    ...randomQuestions.map((q) => q.id),
+  ]);
   const allQuestions = questionIds.size ? await tx.select().from(questions).where(inArray(questions.id, [...questionIds])) : [];
   const versions = questionIds.size
     ? await tx.select().from(questionVersions).where(inArray(questionVersions.questionId, [...questionIds])).orderBy(asc(questionVersions.version))
     : [];
   // Shared (organization) categories used by the quizzes, with their ancestors.
   const cats = new Map(courseCats.map((c) => [c.id, c]));
-  let missing = [...new Set(allQuestions.map((q) => q.categoryId))].filter((id) => !cats.has(id));
+  let missing = [...new Set([...allQuestions.map((q) => q.categoryId), ...randomCats])].filter((id) => !cats.has(id));
   while (missing.length) {
     const rows = await tx.select().from(questionCategories).where(inArray(questionCategories.id, missing));
     for (const r of rows) cats.set(r.id, r);

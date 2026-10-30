@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { checkFormula, evaluate, FormulaError, roundTo, variablesIn } from "./formula";
 
 /**
  * Question types: the `data` shape stored in question_versions.data, the
@@ -8,7 +9,7 @@ import { z } from "zod";
  * (attempts/grading). Everything here is pure — no DB access — so it is unit-tested.
  */
 
-export const QUESTION_TYPES = ["multichoice", "truefalse", "shortanswer", "numerical", "essay", "matching"] as const;
+export const QUESTION_TYPES = ["multichoice", "truefalse", "shortanswer", "numerical", "essay", "matching", "calculated", "gapselect"] as const;
 export type QuestionType = (typeof QUESTION_TYPES)[number];
 
 const zFraction = z.number().min(-1).max(1);
@@ -79,6 +80,70 @@ export const zMatchingData = z
     if (d.pairs.filter((p) => p.question.trim()).length < 2) ctx.addIssue({ code: "custom", message: "At least two pairs need a question", path: ["pairs"] });
   });
 
+const zVarName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/, "Variable names use letters, digits and _");
+
+/**
+ * Calculated: the question text uses {name} wildcards (and {=formula} for computed values);
+ * each attempt draws values (or one of the fixed `datasets`) and answers are formulas over them.
+ */
+export const zCalculatedData = z
+  .object({
+    answers: z
+      .array(
+        z.object({
+          formula: z.string().trim().min(1).max(1000),
+          fraction: z.number().min(0).max(1),
+          tolerance: z.number().min(0).finite().default(0.01),
+          /** relative: ± tolerance × |answer|; nominal: ± tolerance; geometric: answer ÷ (1+t) … answer × (1+t). */
+          toleranceType: z.enum(["relative", "nominal", "geometric"]).default("relative"),
+          /** How the correct answer is shown in review. */
+          answerDecimals: z.number().int().min(0).max(10).default(2),
+          answerFormat: z.enum(["decimals", "significant"]).default("decimals"),
+        }),
+      )
+      .min(1)
+      .max(20),
+    variables: z
+      .array(z.object({ name: zVarName, min: z.number().finite(), max: z.number().finite(), decimals: z.number().int().min(0).max(10).default(1) }))
+      .min(1)
+      .max(20),
+    /** Fixed value sets (Moodle datasets): when present, each attempt uses one of them instead of random values. */
+    datasets: z.array(z.record(zVarName, z.number().finite())).max(200).default([]),
+  })
+  .superRefine((d, ctx) => {
+    const names = d.variables.map((v) => v.name);
+    if (new Set(names).size !== names.length) ctx.addIssue({ code: "custom", message: "Variable names must be unique", path: ["variables"] });
+    d.variables.forEach((v, i) => {
+      if (v.max < v.min) ctx.addIssue({ code: "custom", message: `{${v.name}}: maximum is below minimum`, path: ["variables", i, "max"] });
+    });
+    d.answers.forEach((a, i) => {
+      const error = checkFormula(a.formula, names);
+      if (error) ctx.addIssue({ code: "custom", message: `Answer ${i + 1}: ${error}`, path: ["answers", i, "formula"] });
+    });
+    if (!d.answers.some((a) => Math.abs(a.fraction - 1) < 1e-6)) ctx.addIssue({ code: "custom", message: "One answer must be worth 100%", path: ["answers"] });
+    d.datasets.forEach((set, i) => {
+      const missing = names.filter((n) => !(n in set));
+      if (missing.length) ctx.addIssue({ code: "custom", message: `Dataset ${i + 1} has no value for {${missing[0]}}`, path: ["datasets", i] });
+    });
+  });
+
+/**
+ * Gap select (Moodle "select missing words" and "drag and drop into text"): the question text has
+ * [[n]] gaps, each answered by choice n; a gap offers the choices of the same group.
+ */
+export const zGapselectData = z.object({
+  choices: z
+    .array(z.object({ text: zPlain(500).trim().min(1), group: z.number().int().min(1).max(20).default(1) }))
+    .min(2)
+    .max(100),
+  shuffle: z.boolean().default(true),
+});
+
+/** The [[n]] gaps of a gap-select question text, in order (choice numbers, 1-based). */
+export function gapsIn(text: string) {
+  return [...text.matchAll(/\[\[(\d{1,3})\]\]/g)].map((m) => Number(m[1]));
+}
+
 export const DATA_SCHEMAS = {
   multichoice: zMultichoiceData,
   truefalse: zTruefalseData,
@@ -86,6 +151,8 @@ export const DATA_SCHEMAS = {
   numerical: zNumericalData,
   essay: zEssayData,
   matching: zMatchingData,
+  calculated: zCalculatedData,
+  gapselect: zGapselectData,
 } as const;
 
 export type QuestionData = {
@@ -95,6 +162,8 @@ export type QuestionData = {
   numerical: z.infer<typeof zNumericalData>;
   essay: z.infer<typeof zEssayData>;
   matching: z.infer<typeof zMatchingData>;
+  calculated: z.infer<typeof zCalculatedData>;
+  gapselect: z.infer<typeof zGapselectData>;
 };
 
 /** Common authoring fields + type-specific data (discriminated by `type`). */
@@ -104,14 +173,24 @@ const common = {
   defaultMark: z.number().min(0).max(1000).default(1),
   generalFeedback: z.string().max(20_000).nullable().optional(),
 };
-export const zQuestionInput = z.discriminatedUnion("type", [
+export const zQuestionInput = z
+  .discriminatedUnion("type", [
   z.object({ type: z.literal("multichoice"), data: zMultichoiceData, ...common }),
   z.object({ type: z.literal("truefalse"), data: zTruefalseData, ...common }),
   z.object({ type: z.literal("shortanswer"), data: zShortanswerData, ...common }),
   z.object({ type: z.literal("numerical"), data: zNumericalData, ...common }),
   z.object({ type: z.literal("essay"), data: zEssayData, ...common }),
   z.object({ type: z.literal("matching"), data: zMatchingData, ...common }),
-]);
+  z.object({ type: z.literal("calculated"), data: zCalculatedData, ...common }),
+  z.object({ type: z.literal("gapselect"), data: zGapselectData, ...common }),
+  ])
+  .superRefine((q, ctx) => {
+    if (q.type !== "gapselect") return;
+    const gaps = gapsIn(q.text);
+    if (!gaps.length) ctx.addIssue({ code: "custom", message: "Add at least one gap like [[1]] to the question text", path: ["text"] });
+    const bad = gaps.find((n) => n < 1 || n > q.data.choices.length);
+    if (bad !== undefined) ctx.addIssue({ code: "custom", message: `Gap [[${bad}]] has no choice ${bad}`, path: ["text"] });
+  });
 export type QuestionInput = z.infer<typeof zQuestionInput>;
 
 // ─── Responses ──────────────────────────────────────────────────────────────
@@ -123,6 +202,9 @@ export const zNumericalResponse = z.object({ value: z.string().max(100) });
 /** questionPairId → chosen answer text (answers are offered as distinct texts, so ids never leak the mapping). */
 export const zMatchingResponse = z.object({ matches: z.record(zShortId, z.string().max(500)) });
 
+/** Gap number (1-based, in text order) → chosen choice text. */
+export const zGapselectResponse = z.object({ gaps: z.record(z.string().regex(/^\d{1,3}$/), z.string().max(500)) });
+
 export const RESPONSE_SCHEMAS = {
   multichoice: zMultichoiceResponse,
   truefalse: zTruefalseResponse,
@@ -130,6 +212,8 @@ export const RESPONSE_SCHEMAS = {
   numerical: zNumericalResponse,
   essay: zTextResponse,
   matching: zMatchingResponse,
+  calculated: zNumericalResponse,
+  gapselect: zGapselectResponse,
 } as const;
 
 /** Validates a learner response for a type; returns null for invalid shapes. */
@@ -166,11 +250,46 @@ export function countWords(text: string) {
   return plain ? plain.split(/\s+/).length : 0;
 }
 
+/** The attempt's context for a question: its frozen variant and the question text (gap select reads its gaps from it). */
+export type QuestionContext = { variant?: Variant; text?: string };
+
+/** Values of a calculated question's wildcards for an attempt (midpoints when no variant was frozen). */
+export function calculatedValues(d: QuestionData["calculated"], variant?: Variant): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const v of d.variables) out[v.name] = variant?.values?.[v.name] ?? roundTo((v.min + v.max) / 2, v.decimals);
+  return out;
+}
+
+function withinTolerance(value: number, answer: number, tolerance: number, type: "relative" | "nominal" | "geometric") {
+  const eps = 1e-9 * Math.max(1, Math.abs(answer));
+  if (type === "nominal") return Math.abs(value - answer) <= tolerance + eps;
+  if (type === "relative") return Math.abs(value - answer) <= tolerance * Math.abs(answer) + eps;
+  if (answer === 0) return Math.abs(value) <= tolerance + eps;
+  const ratio = value / answer;
+  return ratio > 0 && ratio >= 1 / (1 + tolerance) - eps && ratio <= 1 + tolerance + eps;
+}
+
+function safeEvaluate(formula: string, values: Record<string, number>) {
+  try {
+    const v = evaluate(formula, values);
+    return Number.isFinite(v) ? v : null;
+  } catch (err) {
+    if (err instanceof FormulaError) return null;
+    throw err;
+  }
+}
+
+/** Correct answer of a calculated answer, formatted the way the author asked. */
+function formatCalculated(value: number, a: QuestionData["calculated"]["answers"][number]) {
+  if (a.answerFormat === "significant") return Number(value.toPrecision(Math.max(1, a.answerDecimals))).toString();
+  return roundTo(value, a.answerDecimals).toFixed(a.answerDecimals);
+}
+
 /**
  * Grades one response. `fraction` is 0..1; `null` means it needs manual grading.
  * A missing/invalid response scores 0 (an empty essay is not sent for manual grading).
  */
-export function gradeResponse(type: QuestionType, data: unknown, response: unknown): GradeResult {
+export function gradeResponse(type: QuestionType, data: unknown, response: unknown, ctx: QuestionContext = {}): GradeResult {
   const parsedData = DATA_SCHEMAS[type].safeParse(data);
   if (!parsedData.success) return { fraction: 0 };
   const r = parseResponse(type, response);
@@ -228,12 +347,37 @@ export function gradeResponse(type: QuestionType, data: unknown, response: unkno
       const correct = stems.filter((p) => (matches[p.id] ?? "").trim() === p.answer.trim()).length;
       return { fraction: correct / stems.length };
     }
+    case "calculated": {
+      const d = parsedData.data as QuestionData["calculated"];
+      const raw = (r as z.infer<typeof zNumericalResponse> | null)?.value;
+      if (raw === undefined) return { fraction: 0 };
+      const v = parseNumber(raw);
+      if (Number.isNaN(v)) return { fraction: 0 };
+      const values = calculatedValues(d, ctx.variant);
+      let best = 0;
+      for (const a of d.answers) {
+        const expected = safeEvaluate(a.formula, values);
+        if (expected !== null && withinTolerance(v, expected, a.tolerance, a.toleranceType)) best = Math.max(best, a.fraction);
+      }
+      return { fraction: best };
+    }
+    case "gapselect": {
+      const d = parsedData.data as QuestionData["gapselect"];
+      const gaps = gapsIn(ctx.text ?? "");
+      if (!gaps.length) return { fraction: 0 };
+      const chosen = (r as { gaps: Record<string, string> } | null)?.gaps ?? {};
+      const correct = gaps.filter((n, i) => {
+        const want = d.choices[n - 1]?.text.trim();
+        return want !== undefined && (chosen[String(i + 1)] ?? "").trim() === want;
+      }).length;
+      return { fraction: correct / gaps.length };
+    }
   }
 }
 
 // ─── Attempt variants (shuffling) and learner-safe views ────────────────────
 
-export type Variant = { order?: string[]; stems?: string[]; choices?: string[] };
+export type Variant = { order?: string[]; stems?: string[]; choices?: string[]; values?: Record<string, number> };
 
 export function shuffle<T>(items: T[], rng: () => number = Math.random) {
   const a = [...items];
@@ -258,7 +402,43 @@ export function makeVariant(type: QuestionType, data: unknown, shuffleAnswers: b
     // Choices are always shuffled, otherwise their order would reveal the pairing.
     return { stems: shuffleAnswers ? shuffle(stems, rng) : stems, choices: shuffle(choices, rng) };
   }
+  if (type === "calculated") {
+    const d = data as QuestionData["calculated"];
+    if (d.datasets?.length) {
+      const set = d.datasets[Math.floor(rng() * d.datasets.length)]!;
+      return { values: Object.fromEntries(d.variables.map((v) => [v.name, set[v.name] ?? v.min])) };
+    }
+    return { values: Object.fromEntries(d.variables.map((v) => [v.name, roundTo(v.min + rng() * (v.max - v.min), v.decimals)])) };
+  }
+  if (type === "gapselect") {
+    const d = data as QuestionData["gapselect"];
+    const ids = d.choices.map((_, i) => String(i + 1));
+    return { order: d.shuffle === false ? ids : shuffle(ids, rng) };
+  }
   return {};
+}
+
+/**
+ * The question text as the learner sees it in this attempt: calculated wildcards ({x}, {=formula})
+ * filled in, gap-select [[n]] gaps numbered. Inserted values are numbers and fixed markup only.
+ */
+export function presentText(type: QuestionType, data: unknown, text: string, variant: Variant): string {
+  if (type === "calculated") {
+    const parsed = zCalculatedData.safeParse(data);
+    if (!parsed.success) return text;
+    const values = calculatedValues(parsed.data, variant);
+    return text
+      .replace(/\{=((?:[^{}]|\{[A-Za-z_][A-Za-z0-9_]{0,63}\})+)\}/g, (m, expr: string) => {
+        const v = safeEvaluate(expr, values);
+        return v === null ? m : String(roundTo(v, 10));
+      })
+      .replace(/\{([A-Za-z_][A-Za-z0-9_]{0,63})\}/g, (m, name: string) => (name in values ? String(values[name]) : m));
+  }
+  if (type === "gapselect") {
+    let k = 0;
+    return text.replace(/\[\[(\d{1,3})\]\]/g, () => `<strong>[${++k}]</strong>`);
+  }
+  return text;
 }
 
 /** What a learner may see of a question while attempting it — never fractions, answers or feedback. */
@@ -268,9 +448,11 @@ export type StudentView =
   | { type: "shortanswer" }
   | { type: "numerical" }
   | { type: "essay"; responseTemplate: string | null; minWords: number | null }
-  | { type: "matching"; stems: { id: string; text: string }[]; choices: string[] };
+  | { type: "matching"; stems: { id: string; text: string }[]; choices: string[] }
+  | { type: "calculated" }
+  | { type: "gapselect"; gaps: { id: string; options: string[] }[] };
 
-export function studentView(type: QuestionType, data: unknown, variant: Variant): StudentView {
+export function studentView(type: QuestionType, data: unknown, variant: Variant, text = ""): StudentView {
   switch (type) {
     case "multichoice": {
       const d = data as QuestionData["multichoice"];
@@ -292,13 +474,24 @@ export function studentView(type: QuestionType, data: unknown, variant: Variant)
         choices: variant.choices ?? [...new Set(d.pairs.map((p) => p.answer.trim()))].sort(),
       };
     }
+    case "gapselect": {
+      const d = data as QuestionData["gapselect"];
+      const order = (variant.order ?? d.choices.map((_, i) => String(i + 1))).map(Number).filter((n) => d.choices[n - 1]);
+      return {
+        type,
+        gaps: gapsIn(text).map((n, i) => {
+          const group = d.choices[n - 1]?.group ?? 1;
+          return { id: String(i + 1), options: [...new Set(order.filter((c) => (d.choices[c - 1]!.group ?? 1) === group).map((c) => d.choices[c - 1]!.text.trim()))] };
+        }),
+      };
+    }
     default:
       return { type } as StudentView;
   }
 }
 
 /** Human-readable correct answer, shown in review when `rightAnswer` is enabled. */
-export function rightAnswerText(type: QuestionType, data: unknown): string | null {
+export function rightAnswerText(type: QuestionType, data: unknown, ctx: QuestionContext = {}): string | null {
   switch (type) {
     case "multichoice": {
       const d = data as QuestionData["multichoice"];
@@ -324,6 +517,18 @@ export function rightAnswerText(type: QuestionType, data: unknown): string | nul
         .join("; ");
     case "essay":
       return null;
+    case "calculated": {
+      const d = data as QuestionData["calculated"];
+      const best = d.answers.find((a) => a.fraction >= 1);
+      const value = best ? safeEvaluate(best.formula, calculatedValues(d, ctx.variant)) : null;
+      return best && value !== null ? formatCalculated(value, best) : null;
+    }
+    case "gapselect": {
+      const d = data as QuestionData["gapselect"];
+      return gapsIn(ctx.text ?? "")
+        .map((n, i) => `[${i + 1}] ${d.choices[n - 1]?.text ?? "?"}`)
+        .join("; ");
+    }
   }
 }
 

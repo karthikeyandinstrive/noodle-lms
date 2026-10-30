@@ -259,6 +259,67 @@ describe("multi-SCO packages", () => {
   });
 });
 
+describe("SCORM 2004 sequencing", () => {
+  const SEQUENCED = `<?xml version="1.0"?>
+<manifest identifier="m3" xmlns="http://www.imsglobal.org/xsd/imscp_v1p1" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_v1p3" xmlns:imsss="http://www.imsglobal.org/xsd/imsss">
+  <metadata><schema>ADL SCORM</schema><schemaversion>2004 4th Edition</schemaversion></metadata>
+  <organizations default="o"><organization identifier="o"><title>In order</title>
+    <item identifier="one" identifierref="r1"><title>Part 1</title></item>
+    <item identifier="two" identifierref="r2"><title>Part 2</title></item>
+    <imsss:sequencing><imsss:controlMode choice="false" flow="true"/></imsss:sequencing>
+  </organization></organizations>
+  <resources>
+    <resource identifier="r1" type="webcontent" adlcp:scormType="sco" href="one.html"/>
+    <resource identifier="r2" type="webcontent" adlcp:scormType="sco" href="two.html"/>
+  </resources>
+</manifest>`;
+
+  it("enforces flow-only navigation and rolls the attempt up from the activity tree", async () => {
+    const sectionId = (await admin.req("GET", `/courses/${courseId}`)).body.sections[0].id;
+    const fileId = await upload(
+      admin,
+      "ordered.zip",
+      storedZip([
+        { name: "imsmanifest.xml", data: SEQUENCED },
+        { name: "one.html", data: "<html>1</html>" },
+        { name: "two.html", data: "<html>2</html>" },
+      ]),
+    );
+    const created = await admin.req("POST", `/courses/${courseId}/activities`, { type: "scorm", sectionId, name: "In order", settings: { packageFileId: fileId } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const id = created.body.id;
+
+    const first = await student.req("POST", `/scorm/${id}/attempts`, {});
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ sco: "one", nav: { continue: "two", previous: null, sequenced: true } });
+    expect(first.body.scos.map((x: { identifier: string; available: boolean }) => [x.identifier, x.available])).toEqual([
+      ["one", true],
+      ["two", false],
+    ]);
+    const attemptId = first.body.attemptId;
+
+    // choice="false": the second part can't be picked from the menu, only reached by "continue".
+    expect((await student.req("POST", `/scorm/${id}/attempts`, { sco: "two", from: "one" })).status).toBe(409);
+    expect((await student.req("POST", `/scorm/${id}/attempts`, { request: "continue" })).status).toBe(400);
+    const c1 = await student.req("PUT", `/scorm/${id}/attempts/${attemptId}/commit`, {
+      sco: "one",
+      cmi: { "cmi.completion_status": "completed", "adl.nav.request": "continue" },
+      finish: true,
+    });
+    expect(c1.status, JSON.stringify(c1.body)).toBe(200);
+    expect(c1.body).toMatchObject({ scoStatus: "completed", status: "incomplete", next: "two" });
+
+    const second = await student.req("POST", `/scorm/${id}/attempts`, { request: "continue", from: "one" });
+    expect(second.body).toMatchObject({ sco: "two", nav: { continue: null, previous: "one" } });
+    // The navigation request is never stored with the SCO's data.
+    expect(second.body.cmi["adl.nav.request"]).toBeUndefined();
+
+    const c2 = await student.req("PUT", `/scorm/${id}/attempts/${attemptId}/commit`, { sco: "two", cmi: { "cmi.completion_status": "completed" }, finish: true });
+    expect(c2.body).toMatchObject({ status: "completed", next: null, nav: { previous: "one" } });
+    expect((await student.req("POST", `/scorm/${id}/attempts`, { request: "continue", from: "two" })).status).toBe(409);
+  });
+});
+
 describe("package replacement", () => {
   it("deletes the old package's extracted files after a new package is installed", async () => {
     const { existsSync } = await import("node:fs");

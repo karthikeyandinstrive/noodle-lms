@@ -199,7 +199,7 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
     {
       schema: {
         tags: ["Messaging"],
-        summary: "Server-sent events: `message` (a conversation of mine changed) — hints to refetch, no message content",
+        summary: "Server-sent events: `message` (a conversation of mine changed) and `notification` (my notifications changed) — hints to refetch, no content",
       },
     },
     async (req, reply) => {

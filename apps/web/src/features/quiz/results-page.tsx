@@ -194,7 +194,7 @@ export function QuizResultsPage() {
                           <TableRow key={q.slotId}>
                             <TableCell>{q.number}</TableCell>
                             <TableCell className="max-w-56 truncate">{q.name}</TableCell>
-                            <TableCell className="hidden sm:table-cell">{typeLabel(t, q.type)}</TableCell>
+                            <TableCell className="hidden sm:table-cell">{q.type ? typeLabel(t, q.type) : t("quiz.edit.random", "Random")}</TableCell>
                             <TableCell>
                               {q.responses}
                               {q.needsGrading > 0 && (

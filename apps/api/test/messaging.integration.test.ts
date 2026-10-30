@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { closeDb, notifications, systemDb } from "@lms/db";
+import { closeDb, notifications, systemDb, withTenant } from "@lms/db";
 import { dispatchPendingEvents } from "../src/core/events";
+import { subscribeLive, type LiveEvent } from "../src/core/live";
+import { notify } from "../src/core/notify";
 import { Client, PASSWORD, setup, type TestEnv } from "./helpers";
 
 /**
@@ -250,5 +252,43 @@ describe("live updates (server-sent events)", () => {
     // Hints only: the message text never travels over the stream.
     expect(text).not.toContain("Are you there?");
     res.destroy();
+  });
+});
+
+describe("live notification hints", () => {
+  async function orgId() {
+    return (await admin.req("GET", "/auth/me")).body.organization.id as string;
+  }
+
+  it("tells the recipient's tabs after the notification commits, and never on rollback", async () => {
+    const organizationId = await orgId();
+    const events: LiveEvent[] = [];
+    const stop = subscribeLive(ids.s3, (e) => events.push(e));
+    try {
+      await expect(
+        withTenant(organizationId, async (tx) => {
+          await notify(tx, { organizationId, userIds: [ids.s3], type: "announcement", title: "Rolled back" });
+          throw new Error("abort");
+        }),
+      ).rejects.toThrow("abort");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(events).toEqual([]);
+
+      await withTenant(organizationId, async (tx) => {
+        await notify(tx, { organizationId, userIds: [ids.s3], type: "announcement", title: "Hello" });
+        // Not before commit.
+        expect(events).toEqual([]);
+      });
+      expect(events).toEqual([{ type: "notification" }]);
+
+      // Marking read updates the badge in the user's other tabs.
+      expect((await s3.req("POST", "/notifications/read", { all: true })).status).toBe(200);
+      expect(events).toHaveLength(2);
+      // Nothing left to mark: no hint.
+      expect((await s3.req("POST", "/notifications/read", { all: true })).status).toBe(200);
+      expect(events).toHaveLength(2);
+    } finally {
+      stop();
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gradeResponse, makeVariant, parseNumber, rightAnswerText, studentView, zQuestionInput } from "./question-types";
+import { gradeResponse, makeVariant, parseNumber, presentText, rightAnswerText, studentView, zQuestionInput } from "./question-types";
 
 const mcSingle = {
   single: true,
@@ -157,5 +157,76 @@ describe("views never leak answers", () => {
   it("right answer text", () => {
     expect(rightAnswerText("truefalse", { correct: false })).toBe("False");
     expect(rightAnswerText("multichoice", mcMulti)).toBe("2; 3");
+  });
+});
+
+describe("calculated questions", () => {
+  const data = {
+    answers: [
+      { formula: "{w} * {h}", fraction: 1, tolerance: 0.01, toleranceType: "relative" as const, answerDecimals: 2, answerFormat: "decimals" as const },
+      { formula: "2 * ({w} + {h})", fraction: 0.5, tolerance: 0.1, toleranceType: "nominal" as const, answerDecimals: 1, answerFormat: "decimals" as const },
+    ],
+    variables: [
+      { name: "w", min: 1, max: 10, decimals: 1 },
+      { name: "h", min: 2, max: 3, decimals: 0 },
+    ],
+    datasets: [],
+  };
+
+  it("validates formulas against the declared wildcards", () => {
+    const ok = zQuestionInput.safeParse({ type: "calculated", name: "Area", text: "Area of {w} × {h}?", data });
+    expect(ok.success).toBe(true);
+    const bad = zQuestionInput.safeParse({ type: "calculated", name: "Area", text: "x", data: { ...data, answers: [{ ...data.answers[0], formula: "{w} * {z}" }] } });
+    expect(bad.success).toBe(false);
+  });
+
+  it("draws values per attempt and grades against them with tolerance", () => {
+    const variant = makeVariant("calculated", data, false, () => 0.5);
+    expect(variant.values).toEqual({ w: 5.5, h: 3 });
+    const ctx = { variant };
+    expect(gradeResponse("calculated", data, { value: "16.5" }, ctx).fraction).toBe(1);
+    expect(gradeResponse("calculated", data, { value: "16.6" }, ctx).fraction).toBe(1); // within 1 %
+    expect(gradeResponse("calculated", data, { value: "17.05" }, ctx).fraction).toBe(0.5); // perimeter 17 ± 0.1
+    expect(gradeResponse("calculated", data, { value: "20" }, ctx).fraction).toBe(0);
+    expect(rightAnswerText("calculated", data, ctx)).toBe("16.50");
+  });
+
+  it("uses one of the fixed datasets when there are some", () => {
+    const fixed = { ...data, datasets: [{ w: 2, h: 3 }, { w: 4, h: 2 }] };
+    expect(makeVariant("calculated", fixed, false, () => 0.9).values).toEqual({ w: 4, h: 2 });
+  });
+
+  it("fills wildcards and {=formulas} into the text", () => {
+    expect(presentText("calculated", data, "<p>{w} by {h}: {={w}*2}, {unknown}</p>", { values: { w: 1.5, h: 2 } })).toBe("<p>1.5 by 2: 3, {unknown}</p>");
+  });
+});
+
+describe("gap select questions", () => {
+  const text = "<p>The [[1]] sat on the [[2]] next to the [[1]].</p>";
+  const data = { choices: [{ text: "cat", group: 1 }, { text: "mat", group: 2 }, { text: "dog", group: 1 }, { text: "rug", group: 2 }], shuffle: false };
+
+  it("needs gaps that refer to existing choices", () => {
+    expect(zQuestionInput.safeParse({ type: "gapselect", name: "G", text, data }).success).toBe(true);
+    expect(zQuestionInput.safeParse({ type: "gapselect", name: "G", text: "No gaps", data }).success).toBe(false);
+    expect(zQuestionInput.safeParse({ type: "gapselect", name: "G", text: "[[9]]", data }).success).toBe(false);
+  });
+
+  it("offers each gap the choices of its group and grades per gap", () => {
+    const variant = makeVariant("gapselect", data, true);
+    const view = studentView("gapselect", data, { order: ["1", "2", "3", "4"] }, text);
+    expect(view).toEqual({
+      type: "gapselect",
+      gaps: [
+        { id: "1", options: ["cat", "dog"] },
+        { id: "2", options: ["mat", "rug"] },
+        { id: "3", options: ["cat", "dog"] },
+      ],
+    });
+    expect(variant.order).toHaveLength(4);
+    const ctx = { text };
+    expect(gradeResponse("gapselect", data, { gaps: { "1": "cat", "2": "mat", "3": "cat" } }, ctx).fraction).toBe(1);
+    expect(gradeResponse("gapselect", data, { gaps: { "1": "cat", "2": "rug" } }, ctx).fraction).toBeCloseTo(1 / 3);
+    expect(rightAnswerText("gapselect", data, ctx)).toBe("[1] cat; [2] mat; [3] cat");
+    expect(presentText("gapselect", data, text, {})).toBe("<p>The <strong>[1]</strong> sat on the <strong>[2]</strong> next to the <strong>[3]</strong>.</p>");
   });
 });

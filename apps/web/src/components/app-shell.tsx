@@ -70,6 +70,7 @@ import { api } from "@/lib/api";
 import { LOCALES, type Locale, setStoredLocale, useLocale, useT } from "@/lib/i18n";
 import { meKey, useLogout, useSession } from "@/lib/session";
 import { messagingKeys } from "@/features/messaging/types";
+import { notificationsKey } from "@/features/notifications/types";
 
 type NavItem = { href: string; key: string; label: string; icon: React.ComponentType<{ className?: string }>; capability?: string; badge?: "messages" };
 
@@ -102,18 +103,22 @@ const ADMIN: NavItem[] = [
 ];
 
 /**
- * Live message updates: the API streams "a conversation changed" hints (server-sent events)
- * and we refetch through the normal API. Polling stays on as the fallback if the stream drops.
+ * Live updates: the API streams "a conversation changed" / "my notifications changed" hints
+ * (server-sent events) and we refetch through the normal API. Polling stays on as the fallback
+ * if the stream drops.
  */
-function useLiveMessages(enabled: boolean) {
+function useLiveUpdates(enabled: boolean) {
   const qc = useQueryClient();
   useEffect(() => {
     if (!enabled || typeof EventSource === "undefined") return;
     const source = new EventSource("/api/v1/messages/stream");
     const onMessage = () => void qc.invalidateQueries({ queryKey: messagingKeys.all });
+    const onNotification = () => void qc.invalidateQueries({ queryKey: notificationsKey });
     source.addEventListener("message", onMessage);
+    source.addEventListener("notification", onNotification);
     return () => {
       source.removeEventListener("message", onMessage);
+      source.removeEventListener("notification", onNotification);
       source.close();
     };
   }, [enabled, qc]);
@@ -122,7 +127,7 @@ function useLiveMessages(enabled: boolean) {
 function NotificationBell() {
   const t = useT();
   const { data } = useQuery({
-    queryKey: ["notifications", "unread-count"],
+    queryKey: [...notificationsKey, "unread-count"],
     queryFn: () => api<{ count: number }>("/notifications/unread-count").catch(() => ({ count: 0 })),
     refetchInterval: 60_000,
   });
@@ -184,7 +189,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const logout = useLogout();
   const t = useT();
-  useLiveMessages(!!session.user);
+  useLiveUpdates(!!session.user);
   const unreadMessages = useQuery({
     queryKey: messagingKeys.unread,
     queryFn: () => api<{ count: number }>("/messages/unread-count").catch(() => ({ count: 0 })),

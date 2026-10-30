@@ -1,5 +1,5 @@
 import type { attemptAnswers, questionVersions } from "@lms/db";
-import { correctnessOf, rightAnswerText, responseFeedback, studentView, type QuestionType, type StudentView, type Variant } from "./question-types";
+import { correctnessOf, presentText, rightAnswerText, responseFeedback, studentView, type QuestionType, type StudentView, type Variant } from "./question-types";
 
 type AnswerRow = typeof attemptAnswers.$inferSelect;
 type VersionRow = typeof questionVersions.$inferSelect;
@@ -44,20 +44,22 @@ export function presentQuestion(
 ): PresentedQuestion {
   const { answer, version } = row;
   const type = version.type as QuestionType;
+  const variant = answer.variant as Variant;
+  const ctx = { variant, text: version.text };
   const out: PresentedQuestion = {
     slotId: answer.slotId,
     number: index + 1,
     type,
-    text: version.text,
+    text: presentText(type, version.data, version.text, variant),
     maxMark: answer.maxMark,
-    view: studentView(type, version.data, answer.variant as Variant),
+    view: studentView(type, version.data, variant, version.text),
     response: answer.response ?? null,
   };
   // Question names are authoring labels and may hint at the answer.
   if (opts.reviewer) out.name = version.name;
   if (!opts.finished) {
     // Nothing is graded yet; reviewers may still see the key.
-    if (opts.reviewer) out.rightAnswer = rightAnswerText(type, version.data);
+    if (opts.reviewer) out.rightAnswer = rightAnswerText(type, version.data, ctx);
     return out;
   }
   if (show.correctness) out.state = answer.needsGrading ? "needs_grading" : correctnessOf(answer.fraction);
@@ -67,6 +69,6 @@ export function presentQuestion(
     out.generalFeedback = version.generalFeedback;
     out.comment = answer.comment;
   }
-  if (show.rightAnswer) out.rightAnswer = rightAnswerText(type, version.data);
+  if (show.rightAnswer) out.rightAnswer = rightAnswerText(type, version.data, ctx);
   return out;
 }

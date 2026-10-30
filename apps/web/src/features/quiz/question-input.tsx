@@ -16,6 +16,7 @@ export function isAnswered(r: Response): boolean {
   if ("selected" in r) return r.selected.length > 0;
   if ("text" in r) return r.text.trim().length > 0;
   if ("matches" in r) return Object.values(r.matches).some(Boolean);
+  if ("gaps" in r) return Object.values(r.gaps).some(Boolean);
   if ("value" in r) return typeof r.value === "boolean" || String(r.value).trim().length > 0;
   return false;
 }
@@ -44,7 +45,9 @@ export function QuestionInput({
       const selected = value && "selected" in value ? value.selected : [];
       return (
         <fieldset className="space-y-2" disabled={readOnly}>
-          <legend className="mb-2 text-xs text-muted-foreground">{v.single ? t("quiz.selectOne", "Select one:") : t("quiz.selectMany", "Select one or more:")}</legend>
+          <legend className="mb-2 text-xs text-muted-foreground">
+            {v.single ? t("quiz.selectOne", "Select one:") : t("quiz.selectMany", "Select one or more:")}
+          </legend>
           {v.options.map((o, i) => (
             <label key={o.id} className={cn(choiceClass, readOnly && "cursor-default")}>
               <input
@@ -54,7 +57,10 @@ export function QuestionInput({
                 checked={selected.includes(o.id)}
                 onChange={(e) => {
                   if (v.single) onChange({ selected: [o.id] });
-                  else onChange({ selected: e.target.checked ? [...selected, o.id] : selected.filter((x) => x !== o.id) });
+                  else
+                    onChange({
+                      selected: e.target.checked ? [...selected, o.id] : selected.filter((x) => x !== o.id),
+                    });
                 }}
               />
               <span>
@@ -90,7 +96,8 @@ export function QuestionInput({
       );
     }
     case "shortanswer":
-    case "numerical": {
+    case "numerical":
+    case "calculated": {
       const text = value && "text" in value ? value.text : value && "value" in value && typeof value.value === "string" ? value.value : "";
       return (
         <div className="max-w-sm space-y-1.5">
@@ -98,10 +105,10 @@ export function QuestionInput({
           <Input
             id={name}
             readOnly={readOnly}
-            inputMode={v.type === "numerical" ? "decimal" : undefined}
+            inputMode={v.type === "shortanswer" ? undefined : "decimal"}
             autoComplete="off"
             value={text}
-            onChange={(e) => onChange(v.type === "numerical" ? { value: e.target.value } : { text: e.target.value })}
+            onChange={(e) => onChange(v.type === "shortanswer" ? { text: e.target.value } : { value: e.target.value })}
           />
         </div>
       );
@@ -156,14 +163,63 @@ export function QuestionInput({
         </div>
       );
     }
+    case "gapselect": {
+      // The text shows numbered gaps ([1], [2] …); each gap is answered with a labelled drop-down.
+      const gaps = value && "gaps" in value ? value.gaps : {};
+      return (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {v.gaps.map((g) => (
+            <div key={g.id} className="flex items-center gap-2">
+              <label htmlFor={`${name}-${g.id}`} className="w-16 shrink-0 text-sm">
+                {t("quiz.gapN", "Gap [{n}]", { n: g.id })}
+              </label>
+              <select
+                id={`${name}-${g.id}`}
+                disabled={readOnly}
+                className="h-8 w-full rounded-lg border bg-background px-2 text-sm"
+                value={gaps[g.id] ?? ""}
+                onChange={(e) => onChange({ gaps: { ...gaps, [g.id]: e.target.value } })}
+              >
+                <option value="">{t("quiz.choose", "Choose…")}</option>
+                {g.options.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))}
+        </div>
+      );
+    }
   }
 }
 
 const STATE: Record<NonNullable<AttemptQuestion["state"]>, { key: string; label: string; icon: typeof CheckCircle2; className: string }> = {
-  correct: { key: "quiz.state.correct", label: "Correct", icon: CheckCircle2, className: "text-green-600 dark:text-green-500" },
-  partial: { key: "quiz.state.partial", label: "Partially correct", icon: CircleAlert, className: "text-amber-600 dark:text-amber-500" },
-  incorrect: { key: "quiz.state.incorrect", label: "Incorrect", icon: XCircle, className: "text-destructive" },
-  needs_grading: { key: "quiz.state.needsGrading", label: "Requires grading", icon: CircleDashed, className: "text-muted-foreground" },
+  correct: {
+    key: "quiz.state.correct",
+    label: "Correct",
+    icon: CheckCircle2,
+    className: "text-green-600 dark:text-green-500",
+  },
+  partial: {
+    key: "quiz.state.partial",
+    label: "Partially correct",
+    icon: CircleAlert,
+    className: "text-amber-600 dark:text-amber-500",
+  },
+  incorrect: {
+    key: "quiz.state.incorrect",
+    label: "Incorrect",
+    icon: XCircle,
+    className: "text-destructive",
+  },
+  needs_grading: {
+    key: "quiz.state.needsGrading",
+    label: "Requires grading",
+    icon: CircleDashed,
+    className: "text-muted-foreground",
+  },
 };
 
 /** One question card: header, text, input and (when released) review information. */
@@ -186,7 +242,9 @@ export function QuestionCard({
     <section className="space-y-4 rounded-xl border p-4 sm:p-5" aria-labelledby={`qh-${question.slotId}`}>
       <header className="flex flex-wrap items-center justify-between gap-2">
         <h2 id={`qh-${question.slotId}`} className="font-medium">
-          {t("quiz.questionNumber", "Question {number}", { number: question.number })}
+          {t("quiz.questionNumber", "Question {number}", {
+            number: question.number,
+          })}
           {question.name && <span className="ml-2 text-sm font-normal text-muted-foreground">{question.name}</span>}
         </h2>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -198,8 +256,12 @@ export function QuestionCard({
           <Badge variant="outline">
             {question.mark !== undefined && question.mark !== null ? `${round(question.mark)} / ` : ""}
             {question.maxMark === 1
-              ? t("quiz.marks.one", "{count} mark", { count: round(question.maxMark) })
-              : t("quiz.marks.other", "{count} marks", { count: round(question.maxMark) })}
+              ? t("quiz.marks.one", "{count} mark", {
+                  count: round(question.maxMark),
+                })
+              : t("quiz.marks.other", "{count} marks", {
+                  count: round(question.maxMark),
+                })}
           </Badge>
         </div>
       </header>

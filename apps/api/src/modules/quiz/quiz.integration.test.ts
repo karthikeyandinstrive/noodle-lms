@@ -176,6 +176,100 @@ describe("question bank + quiz", () => {
   });
 });
 
+describe("random slots, calculated and gap select questions", () => {
+  let poolId: string;
+  let subId: string;
+  let calcId: string;
+
+  async function question(categoryId: string, body: Record<string, unknown>) {
+    const res = await admin.req("POST", "/question-bank/questions", { categoryId, ...body });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    return res.body.id as string;
+  }
+  async function quiz(name: string) {
+    const res = await admin.req("POST", `/courses/${courseId}/activities`, { type: "quiz", sectionId, name, settings: { attemptsAllowed: 0, gradeMax: 10 } });
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  }
+
+  it("builds a bank with the new question types", async () => {
+    poolId = (await admin.req("POST", "/question-bank/categories", { courseId, name: "Pool" })).body.id;
+    subId = (await admin.req("POST", "/question-bank/categories", { courseId, name: "Sub", parentId: poolId })).body.id;
+    calcId = await question(poolId, {
+      type: "calculated",
+      name: "Area",
+      text: "<p>Area of a {w} by {h} rectangle?</p>",
+      data: {
+        answers: [{ formula: "{w}*{h}", fraction: 1, tolerance: 0.01, toleranceType: "relative", answerDecimals: 2 }],
+        variables: [
+          { name: "w", min: 2, max: 9, decimals: 1 },
+          { name: "h", min: 2, max: 5, decimals: 0 },
+        ],
+      },
+    });
+    await question(poolId, { type: "shortanswer", name: "Capital", text: "Capital of Spain?", data: { answers: [{ text: "Madrid", fraction: 1 }] } });
+    await question(subId, { type: "gapselect", name: "Gaps", text: "<p>The [[1]] says [[2]].</p>", data: { choices: [{ text: "cow", group: 1 }, { text: "moo", group: 2 }, { text: "cat", group: 1 }, { text: "meow", group: 2 }] } });
+    const bad = await admin.req("POST", "/question-bank/questions", { categoryId: poolId, type: "gapselect", name: "x", text: "no gaps", data: { choices: [{ text: "a" }, { text: "b" }] } });
+    expect(bad.status).toBe(400);
+  });
+
+  it("draws different questions into random slots and grades every type", async () => {
+    const qz = await quiz("Mixed");
+    expect((await admin.req("POST", `/quizzes/${qz}/slots`, { questionIds: [calcId] })).status).toBe(200);
+    const added = await admin.req("POST", `/quizzes/${qz}/random-slots`, { categoryId: poolId, includeSubcategories: true, count: 2 });
+    expect(added.status, JSON.stringify(added.body)).toBe(200);
+    expect(added.body.map((x: { type: string | null; random: { available: number } | null }) => [x.type, x.random?.available ?? null])).toEqual([
+      ["calculated", null],
+      [null, 3],
+      [null, 3],
+    ]);
+    expect((await admin.req("PATCH", `/quizzes/${qz}/slots/${added.body[1].id}`, { pinnedVersion: 1 })).status).toBe(400);
+
+    const start = await student.req("POST", `/quizzes/${qz}/attempts`, {});
+    expect(start.status, JSON.stringify(start.body)).toBe(200);
+    const attemptId = start.body.attemptId;
+    const view = await student.req("GET", `/quizzes/${qz}/attempts/${attemptId}`);
+    const [calc, ...random] = view.body.questions;
+    // The fixed question is never drawn again; the random slots got the other two.
+    expect(random.map((q: { type: string }) => q.type).sort()).toEqual(["gapselect", "shortanswer"]);
+    const m = /Area of a ([\d.]+) by (\d+) rectangle/.exec(calc.text);
+    expect(m, calc.text).toBeTruthy();
+    expect(JSON.stringify(view.body)).not.toMatch(/\{w\}|formula|"group"/);
+    const gaps = random.find((q: { type: string }) => q.type === "gapselect");
+    expect(gaps.view.gaps.map((g: { options: string[] }) => [...g.options].sort())).toEqual([
+      ["cat", "cow"],
+      ["meow", "moo"],
+    ]);
+    expect(gaps.text).toBe("<p>The <strong>[1]</strong> says <strong>[2]</strong>.</p>");
+
+    const area = Number(m![1]) * Number(m![2]);
+    const save = await student.req("PUT", `/quizzes/${qz}/attempts/${attemptId}/responses`, {
+      responses: [
+        { slotId: calc.slotId, response: { value: String(area) } },
+        { slotId: gaps.slotId, response: { gaps: { "1": "cow", "2": "moo" } } },
+        { slotId: random.find((q: { type: string }) => q.type === "shortanswer").slotId, response: { text: "madrid" } },
+      ],
+    });
+    expect(save.status, JSON.stringify(save.body)).toBe(200);
+    const fin = await student.req("POST", `/quizzes/${qz}/attempts/${attemptId}/finish`, {});
+    expect(fin.body).toMatchObject({ status: "finished", sumMarks: 3, grade: 10 });
+
+    // Reviewers see the right answer computed with this attempt's values.
+    const review = await admin.req("GET", `/quizzes/${qz}/attempts/${attemptId}`);
+    expect(review.body.questions[0].rightAnswer).toBe(area.toFixed(2));
+    const stats = await admin.req("GET", `/quizzes/${qz}/results`);
+    expect(stats.body.questions.map((q: { type: string | null }) => q.type)).toEqual(["calculated", null, null]);
+  });
+
+  it("refuses to start when a random slot has nothing left to draw", async () => {
+    const qz = await quiz("Too few");
+    await admin.req("POST", `/quizzes/${qz}/random-slots`, { categoryId: subId, count: 2 });
+    const start = await student.req("POST", `/quizzes/${qz}/attempts`, {});
+    expect(start.status).toBe(409);
+    expect(start.body.error.message).toMatch(/random question/);
+  });
+});
+
 describe("assignment", () => {
   let asgId: string;
 

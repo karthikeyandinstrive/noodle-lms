@@ -1,4 +1,5 @@
 import type { ArchiveFiles } from "./archive";
+import { parseMoodleGradebook } from "./mbz-gradebook";
 import { moodleQuizSlots, parseMoodleQuestions } from "./mbz-questions";
 import { zBackupCourse, type ParsedBackupCourse, type RestoreReport } from "./format";
 import { child, children, numberOf, parseXml, path, textOf, type XmlNode } from "./xml";
@@ -8,13 +9,14 @@ import { child, children, numberOf, parseXml, path, textOf, type XmlNode } from 
  * so the regular restore engine creates the course.
  *
  * Supported: course settings, sections, page, url, label (as page), assign,
- * forum, quiz (settings and question slots), the question bank (see mbz-questions.ts)
- * and files embedded in course, section and activity HTML (@@PLUGINFILE@@ links).
- * Everything else is reported as unsupported.
+ * forum, quiz (settings, question slots and random slots), file resources, folders (as a page
+ * linking their files), the question bank (see mbz-questions.ts), the gradebook setup (see
+ * mbz-gradebook.ts) and files embedded in course, section and activity HTML (@@PLUGINFILE@@
+ * links). Everything else is reported as unsupported.
  */
 
 /** Moodle module types we read, and the XML file that holds their settings. */
-const SUPPORTED = new Set(["page", "url", "label", "assign", "forum", "quiz"]);
+const SUPPORTED = new Set(["page", "url", "label", "assign", "forum", "quiz", "resource", "folder"]);
 
 export function isMoodleBackup(files: ArchiveFiles) {
   return files.has("moodle_backup.xml");
@@ -27,18 +29,39 @@ export function mbzFilter(name: string) {
     name === "course/course.xml" ||
     name === "questions.xml" ||
     name === "files.xml" ||
+    name === "gradebook.xml" ||
     /^sections\/[^/]+\/section\.xml$/.test(name) ||
-    /^activities\/[^/]+\/(module|page|url|label|assign|forum|quiz)\.xml$/.test(name)
+    /^activities\/[^/]+\/(module|page|url|label|assign|forum|quiz|resource|folder)\.xml$/.test(name)
   );
 }
 
 // ─── Embedded files ───────────────────────────────────────────────────────
 
-/** File areas whose files are embedded in HTML we import. */
-const EMBEDDED_AREAS = new Set(["course|summary", "course|section", "mod_page|content", "mod_assign|activity", "mod_assign|introattachment"]);
+/** File areas we import: files embedded in HTML, and the files of resources and folders. */
+const EMBEDDED_AREAS = new Set([
+  "course|summary",
+  "course|section",
+  "mod_page|content",
+  "mod_assign|activity",
+  "mod_assign|introattachment",
+  "mod_resource|content",
+  "mod_folder|content",
+]);
 const isEmbeddedArea = (component: string, area: string) => area === "intro" || EMBEDDED_AREAS.has(`${component}|${area}`);
 
-type MoodleFile = { id: string; contextId: string; component: string; area: string; itemId: string; filepath: string; filename: string; mimeType: string; size: number; path: string };
+type MoodleFile = {
+  id: string;
+  contextId: string;
+  component: string;
+  area: string;
+  itemId: string;
+  filepath: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  sortOrder: number;
+  path: string;
+};
 
 /** Readable entries of files.xml that belong to areas we import (directories and empty files excluded). */
 function moodleFiles(files: ArchiveFiles): MoodleFile[] {
@@ -64,6 +87,7 @@ function moodleFiles(files: ArchiveFiles): MoodleFile[] {
       filename,
       mimeType: textOf(f, "mimetype") ?? "application/octet-stream",
       size: numberOf(f, "filesize") ?? 0,
+      sortOrder: numberOf(f, "sortorder") ?? 0,
       path: `files/${hash.slice(0, 2)}/${hash}`,
     });
   }
@@ -187,6 +211,10 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
 
   const acts: Record<string, unknown>[] = [];
   const unsupportedCounts = new Map<string, number>();
+  /** "<module>:<instance id>" → imported activity id (the Moodle course module id), for grade items. */
+  const instances = new Map<string, string>();
+  const areaFiles = (contextId: string | undefined, component: string, area: string) =>
+    available.filter((f) => f.contextId === contextId && f.component === component && f.area === area);
   for (const [i, a] of activityEntries.entries()) {
     const modName = (textOf(a, "modulename") ?? "").trim();
     const moduleId = textOf(a, "moduleid") ?? String(i);
@@ -222,7 +250,34 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
       groupMode: ["none", "separate", "visible"][numberOf(module, "groupmode") ?? 0] ?? "none",
     };
 
+    if (activityXml?.attrs.id) instances.set(`${modName}:${activityXml.attrs.id}`, moduleId);
+
     switch (modName) {
+      case "resource": {
+        // The main file has the highest sort order; other files are its dependencies (e.g. HTML packages).
+        const list = areaFiles(contextId, "mod_resource", "content").sort((a, b) => b.sortOrder - a.sortOrder || a.filepath.localeCompare(b.filepath));
+        const main = list[0];
+        if (!main) {
+          report.warnings.push(`File "${name}" had no file in the backup and was skipped`);
+          instances.delete(`${modName}:${activityXml?.attrs.id}`);
+          continue;
+        }
+        used.add(main);
+        if (list.length > 1) report.warnings.push(`File "${name}": only the main file of ${list.length} was imported`);
+        const display = numberOf(mod, "display") === 4 ? "download" : "inline";
+        acts.push({ ...common, type: "file", description: intro, data: { content: JSON.stringify({ display }), fileId: main.id } });
+        break;
+      }
+      case "folder": {
+        const list = areaFiles(contextId, "mod_folder", "content").sort((a, b) => (a.filepath + a.filename).localeCompare(b.filepath + b.filename));
+        for (const f of list) used.add(f);
+        const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        const links = list.map((f) => `<li><a href="/api/v1/files/${f.id}">${esc((f.filepath + f.filename).replace(/^\//, ""))}</a></li>`).join("");
+        const content = `${intro ?? ""}${links ? `<ul>${links}</ul>` : "<p>(empty folder)</p>"}`;
+        acts.push({ ...common, type: "page", description: null, data: { content } });
+        report.warnings.push(`Folder "${name}" was imported as a page linking its ${list.length} file(s)`);
+        break;
+      }
       case "page":
         acts.push({ ...common, type: "page", description: intro, data: { content: moodleHtml(textOf(mod, "content"), report, `Page "${name}"`, scope("content")) ?? "" } });
         break;
@@ -300,7 +355,9 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
     }
   }
   for (const [mod, n] of unsupportedCounts) report.unsupported.push(`${n} Moodle "${mod}" activit${n === 1 ? "y" : "ies"}`);
-  report.unsupported.push("Moodle user data, attachments outside text, grade setup and restrictions are not imported");
+  report.unsupported.push("Moodle user data (enrolments, grades, submissions, posts) and access restrictions are not imported");
+
+  const gradebook = parseMoodleGradebook(xmlFile(files, "gradebook.xml"), (module, instance) => instances.get(`${module}:${instance}`) ?? null, report);
 
   return zBackupCourse.parse({
     course: {
@@ -315,6 +372,7 @@ export function parseMoodleBackup(files: ArchiveFiles, report: RestoreReport): P
     sections,
     activities: acts,
     questionBank: { categories: bank.categories, questions: bank.questions },
+    gradebook,
     files: [...used].map((f) => ({ id: f.id, filename: f.filename.slice(0, 255), mimeType: f.mimeType.slice(0, 255), size: f.size, path: f.path })),
   });
 }

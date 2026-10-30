@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { notificationPreferences, notifications, users, type DB } from "@lms/db";
+import { afterCommit, notificationPreferences, notifications, users, type DB } from "@lms/db";
 import { config } from "../config";
+import { publishLive } from "./live";
 import { queueMail } from "./mail";
 
 /**
@@ -82,6 +83,8 @@ export async function notify(
         emailedAt: digest.has(userId) ? null : now,
       })),
     );
+    const unread = rows.filter((id) => prefOf.get(id)?.inApp ?? true);
+    afterCommit(tx, () => publishLive(unread, { type: "notification" }));
   }
 
   // Emails are durable jobs written in the caller's transaction: sent only if it commits.

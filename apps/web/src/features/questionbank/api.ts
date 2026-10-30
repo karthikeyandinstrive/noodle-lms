@@ -23,6 +23,13 @@ export type ShortanswerData = { caseSensitive: boolean; answers: { text: string;
 export type NumericalData = { answers: { value: number; tolerance: number; fraction: number }[] };
 export type EssayData = { responseTemplate?: string; minWords?: number };
 export type MatchingData = { pairs: { id: string; question: string; answer: string }[] };
+export type ToleranceType = "relative" | "nominal" | "geometric";
+export type CalculatedData = {
+  answers: { formula: string; fraction: number; tolerance: number; toleranceType: ToleranceType; answerDecimals: number; answerFormat: "decimals" | "significant" }[];
+  variables: { name: string; min: number; max: number; decimals: number }[];
+  datasets: Record<string, number>[];
+};
+export type GapselectData = { choices: { text: string; group: number }[]; shuffle: boolean };
 
 export type QuestionData = {
   multichoice: MultichoiceData;
@@ -31,6 +38,8 @@ export type QuestionData = {
   numerical: NumericalData;
   essay: EssayData;
   matching: MatchingData;
+  calculated: CalculatedData;
+  gapselect: GapselectData;
 };
 
 export type QuestionInput = {
@@ -134,5 +143,32 @@ export function emptyQuestion(type: QuestionType): QuestionInput {
           ],
         },
       };
+    case "calculated":
+      return {
+        ...base,
+        type,
+        data: {
+          answers: [{ formula: "", fraction: 1, tolerance: 0.01, toleranceType: "relative", answerDecimals: 2, answerFormat: "decimals" }],
+          variables: [],
+          datasets: [],
+        },
+      };
+    case "gapselect":
+      return {
+        ...base,
+        type,
+        data: {
+          choices: [
+            { text: "", group: 1 },
+            { text: "", group: 1 },
+          ],
+          shuffle: true,
+        },
+      };
   }
+}
+
+/** Wildcard names ({name}) used in a calculated question's text and formulas. */
+export function wildcardsIn(...texts: string[]) {
+  return [...new Set(texts.flatMap((t) => [...t.matchAll(/\{([A-Za-z_][A-Za-z0-9_]{0,63})\}/g)].map((m) => m[1]!)))];
 }

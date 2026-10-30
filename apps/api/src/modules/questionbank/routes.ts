@@ -7,7 +7,7 @@ import { audit } from "../../core/audit";
 import { badRequest, forbidden, notFound } from "../../core/errors";
 import { offset, ok, paged, zDate, zId, zOk, zPagination } from "../../core/schemas";
 import { QUESTION_TYPES, zQuestionInput, type QuestionInput } from "../quiz/question-types";
-import { parseGift, serializeGift } from "./gift";
+import { parseGift, serializeGift, type GiftQuestion } from "./gift";
 import {
   assertCategoryDeletable,
   type CategoryRow,
@@ -532,7 +532,14 @@ export const routes: FastifyPluginAsyncZod = async (app) => {
           .map((v) => ({ type: v.type, name: v.name, text: v.text, defaultMark: v.defaultMark, generalFeedback: v.generalFeedback, data: v.data }));
         return { cat, items };
       });
-      const text = serializeGift(items, { comment: `Question category: ${cat.name.replace(/[\r\n]+/g, " ")}\n${items.length} question(s), exported ${new Date().toISOString()}` });
+      // GIFT has no syntax for calculated or gap-select questions.
+      const gift = items.filter((q): q is typeof q & { type: GiftQuestion["type"] } => q.type !== "calculated" && q.type !== "gapselect");
+      const skipped = items.length - gift.length;
+      const text = serializeGift(gift, {
+        comment: `Question category: ${cat.name.replace(/[\r\n]+/g, " ")}\n${gift.length} question(s), exported ${new Date().toISOString()}${
+          skipped ? `\n${skipped} calculated / gap-select question(s) left out: GIFT cannot express them` : ""
+        }`,
+      });
       const base = cat.name.replace(/[^\w-]+/g, "_").replace(/^_+|_+$/g, "") || "questions";
       return reply
         .header("Cache-Control", "no-store")

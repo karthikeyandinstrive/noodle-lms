@@ -6,9 +6,11 @@ import { child, children, numberOf, path, textOf, type XmlNode } from "./xml";
  *
  * Handles both layouts: Moodle ≤ 3.11 (questions directly in a category) and 4.x
  * (question_bank_entries with versions). Supported types: multichoice, truefalse,
- * shortanswer, numerical, essay and match (→ matching). Others (random, calculated,
- * ddwtos …) are counted and reported. Quiz slots refer to questions by Moodle question
- * id (3.x) or question bank entry id (4.x); `slotKey` resolves both to our question id.
+ * shortanswer, numerical, essay, match (→ matching), calculated and calculatedsimple
+ * (→ calculated, with their dataset items), ddwtos and gapselect (→ gapselect). Random
+ * questions become random quiz slots. Others (calculatedmulti, ddimageortext, ddmarker,
+ * multianswer …) are counted and reported. Quiz slots refer to questions by Moodle question
+ * id (3.x), question bank entry id (4.x) or a question set reference (4.x random slots).
  */
 
 type Category = { id: string; parentId: string | null; name: string; shared: boolean };
@@ -19,6 +21,8 @@ export type MoodleQuestionBank = {
   questions: BackupQuestion[];
   /** Moodle question id / "entry:<bank entry id>" → backup question id (+ version for pinned 4.x references). */
   refs: Map<string, { questionId: string; version: number | null }>;
+  /** Moodle 3.x "random" pseudo-questions by question id → the category they draw from. */
+  randoms: Map<string, { categoryId: string; includeSubcategories: boolean }>;
 };
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
@@ -93,6 +97,64 @@ export function questionData(q: XmlNode): { type: string; data: Record<string, u
       const template = plainText(textOf(essay, "responsetemplate"));
       return { type: "essay", data: template ? { responseTemplate: template.slice(0, 10_000) } : {} };
     }
+    case "calculated":
+    case "calculatedsimple": {
+      const plugin = path(q, `plugin_qtype_${qtype}_question`);
+      const records = new Map(children(child(plugin, "calculated_records"), "calculated_record").map((r) => [textOf(r, "answer")?.trim() ?? "", r]));
+      const answers = answersOf(q, qtype)
+        .filter((a) => a.text && a.fraction > 0)
+        .map((a) => {
+          const r = records.get(a.id);
+          const tolType = numberOf(r, "tolerancetype") ?? 1;
+          return {
+            formula: a.text.slice(0, 1000),
+            fraction: Math.min(1, a.fraction),
+            tolerance: Math.abs(numberOf(r, "tolerance") ?? 0.01),
+            toleranceType: tolType === 2 ? "nominal" : tolType === 3 ? "geometric" : "relative",
+            answerDecimals: Math.max(0, Math.min(10, numberOf(r, "correctanswerlength") ?? 2)),
+            answerFormat: numberOf(r, "correctanswerformat") === 2 ? "significant" : "decimals",
+          };
+        });
+      if (!answers.some((a) => a.fraction >= 1)) return { skip: "no answer worth 100%" };
+      const defs = children(child(plugin, "dataset_definitions"), "dataset_definition");
+      const variables = defs
+        .map((d) => {
+          // options: "uniform:min:max:decimals" (or loguniform)
+          const [, min, max, decimals] = (textOf(d, "options") ?? "").split(":");
+          return { name: (textOf(d, "name") ?? "").trim(), min: Number(min ?? 1), max: Number(max ?? 10), decimals: Math.max(0, Math.min(10, Number(decimals ?? 1) || 0)) };
+        })
+        .filter((v) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(v.name))
+        .map((v) => ({ ...v, min: Number.isFinite(v.min) ? v.min : 1, max: Number.isFinite(v.max) && v.max >= v.min ? v.max : v.min }));
+      if (!variables.length) return { skip: "no wildcards" };
+      // Dataset items: set k takes item number k of every wildcard (only complete sets are kept).
+      const items = defs.map((d) => new Map(children(child(d, "dataset_items"), "dataset_item").map((it) => [numberOf(it, "number") ?? 0, numberOf(it, "value")])));
+      const count = Math.min(...items.map((m) => m.size));
+      const datasets: Record<string, number>[] = [];
+      for (let k = 1; k <= Math.min(count, 200); k++) {
+        const set: Record<string, number> = {};
+        defs.forEach((d, i) => {
+          const v = items[i]!.get(k);
+          if (v !== null && v !== undefined && Number.isFinite(v)) set[(textOf(d, "name") ?? "").trim()] = v;
+        });
+        if (variables.every((v) => v.name in set)) datasets.push(set);
+      }
+      return { type: "calculated", data: { answers: answers.slice(0, 20), variables: variables.slice(0, 20), datasets } };
+    }
+    case "ddwtos":
+    case "gapselect": {
+      const plugin = path(q, `plugin_qtype_${qtype}_question`);
+      const choices = answersOf(q, qtype).map((a, i) => {
+        const raw = children(child(plugin, "answers"), "answer")[i];
+        const fb = textOf(raw, "feedback") ?? "";
+        // gapselect stores the group number; ddwtos a serialized PHP object with "draggroup".
+        const m = /draggroup";(?:s:\d+:"(\d+)"|i:(\d+))/.exec(fb);
+        const group = Number(m?.[1] ?? m?.[2] ?? (/^\s*\d+\s*$/.test(fb) ? fb : 1)) || 1;
+        return { text: a.text.slice(0, 500), group: Math.max(1, Math.min(20, group)) };
+      });
+      if (choices.length < 2 || choices.some((c) => !c.text)) return { skip: "fewer than two choices" };
+      const shuffle = (numberOf(child(plugin, qtype), "shuffleanswers") ?? 1) === 1;
+      return { type: "gapselect", data: { choices: choices.slice(0, 100), shuffle } };
+    }
     case "match": {
       const pairs = children(path(q, "plugin_qtype_match_question", "matches"), "match")
         .map((m, i) => ({ id: `p${i + 1}`, question: plainText(textOf(m, "questiontext")).slice(0, 1000), answer: plainText(textOf(m, "answertext")).slice(0, 500) }))
@@ -106,13 +168,14 @@ export function questionData(q: XmlNode): { type: string; data: Record<string, u
 }
 
 export function parseMoodleQuestions(doc: XmlNode | null, report: RestoreReport): MoodleQuestionBank {
-  const bank: MoodleQuestionBank = { categories: [], questions: [], refs: new Map() };
+  const bank: MoodleQuestionBank = { categories: [], questions: [], refs: new Map(), randoms: new Map() };
   const root = child(doc, "question_categories");
   if (!root) return bank;
   const skipped = new Map<string, number>();
   const skip = (why: string) => skipped.set(why, (skipped.get(why) ?? 0) + 1);
 
   const version = (q: XmlNode, n: number): Version | null => {
+    if ((textOf(q, "qtype") ?? "").trim() === "random") return null;
     const parsed = questionData(q);
     if ("skip" in parsed) {
       skip(parsed.skip);
@@ -140,6 +203,11 @@ export function parseMoodleQuestions(doc: XmlNode | null, report: RestoreReport)
     // Moodle ≤ 3.11: questions directly in the category.
     for (const q of children(child(cat, "questions"), "question")) {
       if ((textOf(q, "parent") ?? "0").trim() !== "0") continue; // subquestions of cloze etc.
+      if ((textOf(q, "qtype") ?? "").trim() === "random") {
+        // Moodle 3.x random question: questiontext "1" means "include subcategories".
+        if (q.attrs.id) bank.randoms.set(q.attrs.id, { categoryId: id, includeSubcategories: (textOf(q, "questiontext") ?? "").trim() === "1" });
+        continue;
+      }
       const v = version(q, 1);
       if (!v) continue;
       const qid = `q${q.attrs.id ?? bank.questions.length}`;
@@ -168,13 +236,45 @@ export function parseMoodleQuestions(doc: XmlNode | null, report: RestoreReport)
   return bank;
 }
 
+/** Category and "include subcategories" of a Moodle 4.x random slot's filter condition (4.0–4.2 and 4.3+ formats). */
+export function randomFilter(json: string | null): { categoryId: string; includeSubcategories: boolean } | null {
+  if (!json) return null;
+  try {
+    const f = JSON.parse(json) as {
+      questioncategoryid?: string | number;
+      includingsubcategories?: string | number | boolean;
+      filter?: { category?: { values?: (string | number)[]; filteroptions?: { includesubcategories?: boolean | string | number } } };
+    };
+    const id = f.filter?.category?.values?.[0] ?? f.questioncategoryid;
+    if (id === undefined || id === null || id === "") return null;
+    const inc = f.filter?.category?.filteroptions?.includesubcategories ?? f.includingsubcategories;
+    return { categoryId: String(id), includeSubcategories: inc === true || inc === 1 || inc === "1" || inc === "true" };
+  } catch {
+    return null;
+  }
+}
+
+export type MoodleSlot =
+  | { questionId: string; pinnedVersion: number | null; position: number; maxMark: number }
+  | { questionId: null; randomCategoryId: string; randomIncludeSubcategories: boolean; position: number; maxMark: number };
+
 /** Quiz slots from quiz.xml, resolved against the imported bank. */
 export function moodleQuizSlots(quiz: XmlNode | null, bank: MoodleQuestionBank, report: RestoreReport, quizName: string) {
-  const slots: { questionId: string; pinnedVersion: number | null; position: number; maxMark: number }[] = [];
+  const slots: MoodleSlot[] = [];
+  const knownCategory = new Set(bank.categories.map((c) => c.id));
   let missing = 0;
   for (const inst of children(child(quiz, "question_instances"), "question_instance")) {
     const position = numberOf(inst, "slot") ?? slots.length + 1;
     const maxMark = Math.max(0, numberOf(inst, "maxmark") ?? 1);
+    // Moodle 4.x random slot.
+    const set = child(inst, "question_set_reference");
+    if (set) {
+      const random = randomFilter(textOf(set, "filtercondition"));
+      if (random && knownCategory.has(random.categoryId)) {
+        slots.push({ questionId: null, randomCategoryId: random.categoryId, randomIncludeSubcategories: random.includeSubcategories, position, maxMark });
+      } else missing++;
+      continue;
+    }
     const ref = child(inst, "question_reference");
     let hit: { questionId: string; version: number | null } | undefined;
     if (ref) {
@@ -183,6 +283,11 @@ export function moodleQuizSlots(quiz: XmlNode | null, bank: MoodleQuestionBank, 
       if (hit && pinned) hit = { ...hit, version: pinned };
     } else {
       const qid = textOf(inst, "questionid")?.trim() ?? textOf(inst, "question")?.trim();
+      const random = qid ? bank.randoms.get(qid) : undefined;
+      if (random) {
+        slots.push({ questionId: null, randomCategoryId: random.categoryId, randomIncludeSubcategories: random.includeSubcategories, position, maxMark });
+        continue;
+      }
       if (qid) hit = bank.refs.get(qid);
     }
     if (!hit) {
@@ -191,6 +296,6 @@ export function moodleQuizSlots(quiz: XmlNode | null, bank: MoodleQuestionBank, 
     }
     slots.push({ questionId: hit.questionId, pinnedVersion: hit.version, position, maxMark });
   }
-  if (missing) report.warnings.push(`Quiz "${quizName}": ${missing} question slot(s) (random or unsupported questions) were not imported`);
+  if (missing) report.warnings.push(`Quiz "${quizName}": ${missing} question slot(s) (unsupported questions, or random questions from a category outside the backup) were not imported`);
   return slots;
 }

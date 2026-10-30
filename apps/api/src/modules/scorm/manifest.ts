@@ -1,3 +1,5 @@
+import { parseSequencing, usesSequencing, type SeqNode } from "./sequencing";
+
 /**
  * SCORM imsmanifest.xml parsing (pure, dependency-free).
  *
@@ -186,6 +188,8 @@ export type ManifestInfo = {
   launchData: string | null;
   maxTimeAllowed: string | null;
   timeLimitAction: string | null;
+  /** SCORM 2004 packages that use Simple Sequencing: the activity tree (organization = root). */
+  sequencing?: { tree: SeqNode };
 };
 
 function detectVersion(manifest: XmlNode, schemaVersion: string | null): ScormVersion {
@@ -254,7 +258,21 @@ export function parseManifest(xml: string): ManifestInfo {
 
   const items: ManifestItem[] = [];
   const meta = new Map<string, XmlNode>();
-  const walk = (node: XmlNode) => {
+  const collection = new Map<string, XmlNode>();
+  for (const el of kids(kid(manifest, "sequencingCollection"), "sequencing")) {
+    const id = attr(el, "ID");
+    if (id) collection.set(id, el);
+  }
+  const withSequencing = version === "2004" && usesSequencing(manifest);
+  const seqNode = (el: XmlNode, id: string, title: string, sco: string | null): SeqNode => ({
+    id,
+    title,
+    sco,
+    visible: (attr(el, "isvisible") ?? "true").toLowerCase() !== "false",
+    seq: parseSequencing(kid(el, "sequencing"), collection),
+    children: [],
+  });
+  const walk = (node: XmlNode, parent?: SeqNode) => {
     for (const item of kids(node, "item")) {
       if (items.length >= 1000) return;
       const identifier = attr(item, "identifier") ?? `item-${items.length + 1}`;
@@ -268,10 +286,13 @@ export function parseManifest(xml: string): ManifestInfo {
         isSco: !!res?.isSco,
       });
       meta.set(identifier, item);
-      walk(item);
+      const child = parent ? seqNode(item, identifier, items[items.length - 1]!.title, res?.isSco && res.href ? identifier : null) : undefined;
+      if (child) parent!.children.push(child);
+      walk(item, child);
     }
   };
-  if (org) walk(org);
+  const tree = withSequencing && org ? seqNode(org, attr(org, "identifier") ?? "organization", textOf(kid(org, "title")) || "organization", null) : undefined;
+  if (org) walk(org, tree);
 
   const launchable = items.filter((i) => i.href);
   const scos = launchable.filter((i) => i.isSco);
@@ -326,6 +347,7 @@ export function parseManifest(xml: string): ManifestInfo {
     launchData: head.launchData,
     maxTimeAllowed: head.maxTimeAllowed,
     timeLimitAction: head.timeLimitAction,
+    ...(tree ? { sequencing: { tree } } : {}),
   };
 }
 

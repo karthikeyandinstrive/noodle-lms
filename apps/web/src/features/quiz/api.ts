@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { Translate } from "@/lib/i18n";
 
-export type QuestionType = "multichoice" | "truefalse" | "shortanswer" | "numerical" | "essay" | "matching";
+export type QuestionType = "multichoice" | "truefalse" | "shortanswer" | "numerical" | "essay" | "matching" | "calculated" | "gapselect";
 export type GradeMethod = "highest" | "average" | "first" | "last";
 export type ReviewOptions = { marks: boolean; correctness: boolean; feedback: boolean; rightAnswer: boolean };
 
@@ -53,9 +53,18 @@ export type QuestionView =
   | { type: "shortanswer" }
   | { type: "numerical" }
   | { type: "essay"; responseTemplate: string | null; minWords: number | null }
-  | { type: "matching"; stems: { id: string; text: string }[]; choices: string[] };
+  | { type: "matching"; stems: { id: string; text: string }[]; choices: string[] }
+  | { type: "calculated" }
+  | { type: "gapselect"; gaps: { id: string; options: string[] }[] };
 
-export type Response = { selected: string[] } | { value: boolean } | { text: string } | { value: string } | { matches: Record<string, string> } | null;
+export type Response =
+  | { selected: string[] }
+  | { value: boolean }
+  | { text: string }
+  | { value: string }
+  | { matches: Record<string, string> }
+  | { gaps: Record<string, string> }
+  | null;
 
 export type AttemptQuestion = {
   slotId: string;
@@ -88,13 +97,16 @@ export type AttemptDetail = {
 export type Slot = {
   id: string;
   position: number;
-  questionId: string;
+  /** null for a random slot. */
+  questionId: string | null;
   maxMark: number;
   pinnedVersion: number | null;
-  latestVersion: number;
+  latestVersion: number | null;
   name: string;
-  type: QuestionType;
+  type: QuestionType | null;
   deleted: boolean;
+  /** Random slot: each attempt draws a question from this category. */
+  random: { categoryId: string; categoryName: string; includeSubcategories: boolean; available: number } | null;
 };
 
 export type Results = {
@@ -105,7 +117,8 @@ export type Results = {
     slotId: string;
     number: number;
     name: string;
-    type: QuestionType;
+    /** null for random slots. */
+    type: QuestionType | null;
     maxMark: number;
     responses: number;
     averageMark: number | null;
@@ -171,6 +184,8 @@ export const TYPE_LABEL: Record<QuestionType, string> = {
   numerical: "Numerical",
   essay: "Essay",
   matching: "Matching",
+  calculated: "Calculated",
+  gapselect: "Select missing words",
 };
 
 /** Translated grading-method label (keys: quiz.gradeMethod.*). */

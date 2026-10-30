@@ -18,7 +18,10 @@ import {
   emptyQuestion,
   newId,
   useQuestion,
+  wildcardsIn,
+  type CalculatedData,
   type EssayData,
+  type GapselectData,
   type MatchingData,
   type MultichoiceData,
   type NumericalData,
@@ -80,7 +83,14 @@ export function QuestionEditorDialog(props: EditorProps) {
   }
   const v = existing.data?.current;
   const initial = v
-    ? ({ type: v.type, name: v.name, text: v.text, defaultMark: v.defaultMark, generalFeedback: v.generalFeedback, data: v.data } as QuestionInput)
+    ? ({
+        type: v.type,
+        name: v.name,
+        text: v.text,
+        defaultMark: v.defaultMark,
+        generalFeedback: v.generalFeedback,
+        data: v.data,
+      } as QuestionInput)
     : emptyQuestion(props.initialType ?? "multichoice");
   return <EditorDialog {...props} initial={initial} />;
 }
@@ -92,8 +102,13 @@ function EditorDialog({ categoryId, questionId, onClose, initial }: EditorProps 
   const save = useMutation({
     mutationFn: (input: QuestionInput) =>
       questionId
-        ? api<QuestionDetail>(`/question-bank/questions/${questionId}`, { method: "PUT", body: input })
-        : api<QuestionDetail>("/question-bank/questions", { body: { ...input, categoryId } }),
+        ? api<QuestionDetail>(`/question-bank/questions/${questionId}`, {
+            method: "PUT",
+            body: input,
+          })
+        : api<QuestionDetail>("/question-bank/questions", {
+            body: { ...input, categoryId },
+          }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: bankKeys.all });
       toast.success(questionId ? "Saved as a new version" : "Question created");
@@ -122,7 +137,13 @@ function EditorDialog({ categoryId, questionId, onClose, initial }: EditorProps 
                 id="q-type"
                 className={selectClass}
                 value={q.type}
-                onChange={(e) => setQ({ ...emptyQuestion(e.target.value as QuestionType), name: q.name, text: q.text })}
+                onChange={(e) =>
+                  setQ({
+                    ...emptyQuestion(e.target.value as QuestionType),
+                    name: q.name,
+                    text: q.text,
+                  })
+                }
               >
                 {Object.entries(TYPE_LABEL).map(([k, label]) => (
                   <option key={k} value={k}>
@@ -157,6 +178,17 @@ function EditorDialog({ categoryId, questionId, onClose, initial }: EditorProps 
             <p className="text-xs text-muted-foreground">Basic HTML is allowed.</p>
           </div>
 
+          {q.type === "gapselect" && (
+            <p className="-mt-2 text-xs text-muted-foreground">
+              Write each gap as [[n]], where n is the number of the correct choice below, e.g. “The [[1]] sat on the [[2]].”
+            </p>
+          )}
+          {q.type === "calculated" && (
+            <p className="-mt-2 text-xs text-muted-foreground">
+              Use wildcards like {"{x}"} for values drawn per attempt, and {"{={x}*2}"} to show a computed value.
+            </p>
+          )}
+
           <TypeEditor q={q} onChange={setQ} />
 
           <div className="space-y-1.5">
@@ -183,11 +215,32 @@ function EditorDialog({ categoryId, questionId, onClose, initial }: EditorProps 
 function normalise(q: QuestionInput): QuestionInput {
   switch (q.type) {
     case "multichoice":
-      return { ...q, data: { ...q.data, options: q.data.options.filter((o) => o.text.trim()) } };
+      return {
+        ...q,
+        data: {
+          ...q.data,
+          options: q.data.options.filter((o) => o.text.trim()),
+        },
+      };
     case "shortanswer":
-      return { ...q, data: { ...q.data, answers: q.data.answers.filter((a) => a.text.trim()) } };
+      return {
+        ...q,
+        data: {
+          ...q.data,
+          answers: q.data.answers.filter((a) => a.text.trim()),
+        },
+      };
     case "matching":
-      return { ...q, data: { pairs: q.data.pairs.filter((p) => p.answer.trim()) } };
+      return {
+        ...q,
+        data: { pairs: q.data.pairs.filter((p) => p.answer.trim()) },
+      };
+    case "calculated": {
+      // Exactly the wildcards the text and formulas use; ones never edited get the default range shown in the editor.
+      const names = wildcardsIn(q.text, ...q.data.answers.map((a) => a.formula));
+      const variables = names.map((name) => q.data.variables.find((v) => v.name === name) ?? defaultWildcard(name));
+      return { ...q, data: { ...q.data, answers: q.data.answers.filter((a) => a.formula.trim()), variables } };
+    }
     case "essay": {
       const d: EssayData = {};
       if (q.data.responseTemplate) d.responseTemplate = q.data.responseTemplate;
@@ -213,6 +266,10 @@ function TypeEditor({ q, onChange }: { q: QuestionInput; onChange: (q: QuestionI
       return <EssayEditor data={q.data} onChange={(data) => onChange({ ...q, data })} />;
     case "matching":
       return <MatchingEditor data={q.data} onChange={(data) => onChange({ ...q, data })} />;
+    case "calculated":
+      return <CalculatedEditor text={q.text} data={q.data} onChange={(data) => onChange({ ...q, data })} />;
+    case "gapselect":
+      return <GapselectEditor data={q.data} onChange={(data) => onChange({ ...q, data })} />;
   }
 }
 
@@ -228,7 +285,10 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
 
 function MultichoiceEditor({ data, onChange }: { data: MultichoiceData; onChange: (d: MultichoiceData) => void }) {
   const setOpt = (i: number, patch: Partial<MultichoiceData["options"][number]>) =>
-    onChange({ ...data, options: data.options.map((o, j) => (j === i ? { ...o, ...patch } : o)) });
+    onChange({
+      ...data,
+      options: data.options.map((o, j) => (j === i ? { ...o, ...patch } : o)),
+    });
   return (
     <Section
       title="Choices"
@@ -262,7 +322,12 @@ function MultichoiceEditor({ data, onChange }: { data: MultichoiceData; onChange
             className="self-center"
             aria-label={`Remove choice ${i + 1}`}
             disabled={data.options.length <= 2}
-            onClick={() => onChange({ ...data, options: data.options.filter((_, j) => j !== i) })}
+            onClick={() =>
+              onChange({
+                ...data,
+                options: data.options.filter((_, j) => j !== i),
+              })
+            }
           >
             <Trash2 />
           </Button>
@@ -273,7 +338,12 @@ function MultichoiceEditor({ data, onChange }: { data: MultichoiceData; onChange
         variant="outline"
         size="sm"
         disabled={data.options.length >= 26}
-        onClick={() => onChange({ ...data, options: [...data.options, { id: newId(), text: "", fraction: 0, feedback: "" }] })}
+        onClick={() =>
+          onChange({
+            ...data,
+            options: [...data.options, { id: newId(), text: "", fraction: 0, feedback: "" }],
+          })
+        }
       >
         <Plus /> Add choice
       </Button>
@@ -298,7 +368,10 @@ function TruefalseEditor({ data, onChange }: { data: TruefalseData; onChange: (d
 
 function ShortanswerEditor({ data, onChange }: { data: ShortanswerData; onChange: (d: ShortanswerData) => void }) {
   const setAns = (i: number, patch: Partial<ShortanswerData["answers"][number]>) =>
-    onChange({ ...data, answers: data.answers.map((a, j) => (j === i ? { ...a, ...patch } : a)) });
+    onChange({
+      ...data,
+      answers: data.answers.map((a, j) => (j === i ? { ...a, ...patch } : a)),
+    });
   return (
     <Section title="Accepted answers" hint="Use * as a wildcard (e.g. “colo*r”). One answer must be worth 100%.">
       <SwitchField label="Case sensitive" checked={data.caseSensitive} onChange={(c) => onChange({ ...data, caseSensitive: c })} />
@@ -322,13 +395,28 @@ function ShortanswerEditor({ data, onChange }: { data: ShortanswerData; onChange
             size="icon-sm"
             aria-label={`Remove answer ${i + 1}`}
             disabled={data.answers.length <= 1}
-            onClick={() => onChange({ ...data, answers: data.answers.filter((_, j) => j !== i) })}
+            onClick={() =>
+              onChange({
+                ...data,
+                answers: data.answers.filter((_, j) => j !== i),
+              })
+            }
           >
             <Trash2 />
           </Button>
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={() => onChange({ ...data, answers: [...data.answers, { text: "", fraction: 0 }] })}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() =>
+          onChange({
+            ...data,
+            answers: [...data.answers, { text: "", fraction: 0 }],
+          })
+        }
+      >
         <Plus /> Add answer
       </Button>
     </Section>
@@ -337,7 +425,9 @@ function ShortanswerEditor({ data, onChange }: { data: ShortanswerData; onChange
 
 function NumericalEditor({ data, onChange }: { data: NumericalData; onChange: (d: NumericalData) => void }) {
   const setAns = (i: number, patch: Partial<NumericalData["answers"][number]>) =>
-    onChange({ answers: data.answers.map((a, j) => (j === i ? { ...a, ...patch } : a)) });
+    onChange({
+      answers: data.answers.map((a, j) => (j === i ? { ...a, ...patch } : a)),
+    });
   return (
     <Section title="Answers" hint="A response is accepted when it is within ± tolerance of the value. One answer must be worth 100%.">
       {data.answers.map((a, i) => (
@@ -379,7 +469,16 @@ function NumericalEditor({ data, onChange }: { data: NumericalData; onChange: (d
           </Button>
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={() => onChange({ answers: [...data.answers, { value: 0, tolerance: 0, fraction: 0 }] })}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() =>
+          onChange({
+            answers: [...data.answers, { value: 0, tolerance: 0, fraction: 0 }],
+          })
+        }
+      >
         <Plus /> Add answer
       </Button>
     </Section>
@@ -406,7 +505,12 @@ function EssayEditor({ data, onChange }: { data: EssayData; onChange: (d: EssayD
           min={0}
           step={1}
           value={data.minWords ?? ""}
-          onChange={(e) => onChange({ ...data, minWords: e.target.value ? Math.max(0, Math.round(Number(e.target.value))) : undefined })}
+          onChange={(e) =>
+            onChange({
+              ...data,
+              minWords: e.target.value ? Math.max(0, Math.round(Number(e.target.value))) : undefined,
+            })
+          }
         />
       </div>
     </Section>
@@ -415,7 +519,9 @@ function EssayEditor({ data, onChange }: { data: EssayData; onChange: (d: EssayD
 
 function MatchingEditor({ data, onChange }: { data: MatchingData; onChange: (d: MatchingData) => void }) {
   const setPair = (i: number, patch: Partial<MatchingData["pairs"][number]>) =>
-    onChange({ pairs: data.pairs.map((p, j) => (j === i ? { ...p, ...patch } : p)) });
+    onChange({
+      pairs: data.pairs.map((p, j) => (j === i ? { ...p, ...patch } : p)),
+    });
   return (
     <Section title="Pairs" hint="At least two pairs need a question. A pair with an empty question adds an extra (wrong) answer.">
       {data.pairs.map((p, i) => (
@@ -444,8 +550,266 @@ function MatchingEditor({ data, onChange }: { data: MatchingData; onChange: (d: 
           </Button>
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={() => onChange({ pairs: [...data.pairs, { id: newId(), question: "", answer: "" }] })}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() =>
+          onChange({
+            pairs: [...data.pairs, { id: newId(), question: "", answer: "" }],
+          })
+        }
+      >
         <Plus /> Add pair
+      </Button>
+    </Section>
+  );
+}
+
+const defaultWildcard = (name: string) => ({ name, min: 1, max: 10, decimals: 1 });
+
+const TOLERANCE_TYPES = [
+  { value: "relative", label: "Relative (± fraction of the answer)" },
+  { value: "nominal", label: "Nominal (± absolute)" },
+  { value: "geometric", label: "Geometric" },
+] as const;
+
+function CalculatedEditor({ text, data, onChange }: { text: string; data: CalculatedData; onChange: (d: CalculatedData) => void }) {
+  const setAns = (i: number, patch: Partial<CalculatedData["answers"][number]>) =>
+    onChange({
+      ...data,
+      answers: data.answers.map((a, j) => (j === i ? { ...a, ...patch } : a)),
+    });
+  // Every wildcard used in the text or a formula gets a range; new ones start at 1–10.
+  const names = wildcardsIn(text, ...data.answers.map((a) => a.formula));
+  const variables = names.map((name) => data.variables.find((v) => v.name === name) ?? defaultWildcard(name));
+  const setVar = (name: string, patch: Partial<CalculatedData["variables"][number]>) =>
+    onChange({
+      ...data,
+      variables: variables.map((v) => (v.name === name ? { ...v, ...patch } : v)),
+    });
+  return (
+    <>
+      <Section
+        title="Answer formulas"
+        hint="Formulas use the wildcards, e.g. {w} * {h}, and functions like sqrt(), round(x, 2) or pi(). One formula must be worth 100%."
+      >
+        {data.answers.map((a, i) => (
+          <div key={i} className="grid gap-2 rounded-lg bg-muted/30 p-2 sm:grid-cols-[1fr_130px_auto]">
+            <div className="space-y-1">
+              <Label htmlFor={`cf-${i}`} className="text-xs">
+                Formula {i + 1}
+              </Label>
+              <Input id={`cf-${i}`} className="font-mono" value={a.formula} onChange={(e) => setAns(i, { formula: e.target.value })} />
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-[1fr_2fr_1fr]">
+                <div className="space-y-1">
+                  <Label htmlFor={`ct-${i}`} className="text-xs">
+                    Tolerance
+                  </Label>
+                  <Input
+                    id={`ct-${i}`}
+                    type="number"
+                    step="any"
+                    min={0}
+                    value={a.tolerance}
+                    onChange={(e) => setAns(i, { tolerance: Math.abs(Number(e.target.value)) })}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor={`ctt-${i}`} className="text-xs">
+                    Tolerance type
+                  </Label>
+                  <select
+                    id={`ctt-${i}`}
+                    className={selectClass}
+                    value={a.toleranceType}
+                    onChange={(e) =>
+                      setAns(i, {
+                        toleranceType: e.target.value as typeof a.toleranceType,
+                      })
+                    }
+                  >
+                    {TOLERANCE_TYPES.map((tt) => (
+                      <option key={tt.value} value={tt.value}>
+                        {tt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor={`cd-${i}`} className="text-xs">
+                    Shown decimals
+                  </Label>
+                  <Input
+                    id={`cd-${i}`}
+                    type="number"
+                    min={0}
+                    max={10}
+                    step={1}
+                    value={a.answerDecimals}
+                    onChange={(e) =>
+                      setAns(i, {
+                        answerDecimals: Math.max(0, Math.min(10, Math.round(Number(e.target.value)))),
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`cfr-${i}`} className="text-xs">
+                Grade
+              </Label>
+              <FractionSelect id={`cfr-${i}`} value={a.fraction} onChange={(f) => setAns(i, { fraction: f })} />
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="self-center"
+              aria-label={`Remove formula ${i + 1}`}
+              disabled={data.answers.length <= 1}
+              onClick={() =>
+                onChange({
+                  ...data,
+                  answers: data.answers.filter((_, j) => j !== i),
+                })
+              }
+            >
+              <Trash2 />
+            </Button>
+          </div>
+        ))}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={data.answers.length >= 20}
+          onClick={() =>
+            onChange({
+              ...data,
+              answers: [
+                ...data.answers,
+                {
+                  formula: "",
+                  fraction: 0,
+                  tolerance: 0.01,
+                  toleranceType: "relative",
+                  answerDecimals: 2,
+                  answerFormat: "decimals",
+                },
+              ],
+            })
+          }
+        >
+          <Plus /> Add formula
+        </Button>
+      </Section>
+      <Section title="Wildcards" hint="Each attempt draws a value between the minimum and maximum, rounded to the given decimals.">
+        {!variables.length && <p className="text-sm text-muted-foreground">Use a wildcard such as {"{x}"} in the question text or a formula.</p>}
+        {variables.map((v) => (
+          <div key={v.name} className="grid grid-cols-[80px_1fr_1fr_1fr] items-end gap-2">
+            <span className="pb-2 font-mono text-sm">{`{${v.name}}`}</span>
+            <div className="space-y-1">
+              <Label htmlFor={`vmin-${v.name}`} className="text-xs">
+                Minimum
+              </Label>
+              <Input id={`vmin-${v.name}`} type="number" step="any" value={v.min} onChange={(e) => setVar(v.name, { min: Number(e.target.value) })} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`vmax-${v.name}`} className="text-xs">
+                Maximum
+              </Label>
+              <Input id={`vmax-${v.name}`} type="number" step="any" value={v.max} onChange={(e) => setVar(v.name, { max: Number(e.target.value) })} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`vdec-${v.name}`} className="text-xs">
+                Decimals
+              </Label>
+              <Input
+                id={`vdec-${v.name}`}
+                type="number"
+                min={0}
+                max={10}
+                step={1}
+                value={v.decimals}
+                onChange={(e) =>
+                  setVar(v.name, {
+                    decimals: Math.max(0, Math.min(10, Math.round(Number(e.target.value)))),
+                  })
+                }
+              />
+            </div>
+          </div>
+        ))}
+        {data.datasets.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span>{data.datasets.length} fixed value set(s) (imported) are used instead of random values.</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => onChange({ ...data, variables, datasets: [] })}>
+              Use random values instead
+            </Button>
+          </div>
+        )}
+      </Section>
+    </>
+  );
+}
+
+function GapselectEditor({ data, onChange }: { data: GapselectData; onChange: (d: GapselectData) => void }) {
+  const setChoice = (i: number, patch: Partial<GapselectData["choices"][number]>) =>
+    onChange({
+      ...data,
+      choices: data.choices.map((c, j) => (j === i ? { ...c, ...patch } : c)),
+    });
+  return (
+    <Section title="Choices" hint="A gap offers every choice of the same group. Extra choices in a group act as distractors.">
+      <SwitchField label="Shuffle the choices in each gap" checked={data.shuffle} onChange={(c) => onChange({ ...data, shuffle: c })} />
+      {data.choices.map((c, i) => (
+        <div key={i} className="grid grid-cols-[1fr_100px_auto] items-end gap-2">
+          <div className="space-y-1">
+            <Label htmlFor={`gc-${i}`} className="text-xs">
+              Choice [[{i + 1}]]
+            </Label>
+            <Input id={`gc-${i}`} value={c.text} onChange={(e) => setChoice(i, { text: e.target.value })} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`gg-${i}`} className="text-xs">
+              Group
+            </Label>
+            <select id={`gg-${i}`} className={selectClass} value={c.group} onChange={(e) => setChoice(i, { group: Number(e.target.value) })}>
+              {Array.from({ length: 8 }, (_, k) => k + 1).map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Remove choice ${i + 1}`}
+            disabled={data.choices.length <= 2 || i < data.choices.length - 1}
+            title={i < data.choices.length - 1 ? "Only the last choice can be removed (gaps refer to choice numbers)" : undefined}
+            onClick={() => onChange({ ...data, choices: data.choices.slice(0, -1) })}
+          >
+            <Trash2 />
+          </Button>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={data.choices.length >= 100}
+        onClick={() =>
+          onChange({
+            ...data,
+            choices: [...data.choices, { text: "", group: 1 }],
+          })
+        }
+      >
+        <Plus /> Add choice
       </Button>
     </Section>
   );

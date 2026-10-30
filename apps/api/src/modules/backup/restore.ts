@@ -97,7 +97,18 @@ const TYPE_SCHEMAS = {
     shuffleAnswers: z.boolean().default(true),
     reviewOptions: z.object({ marks: z.boolean(), correctness: z.boolean(), feedback: z.boolean(), rightAnswer: z.boolean() }).optional(),
     slots: z
-      .array(z.object({ id: z.string().max(100).optional(), questionId: z.string().max(100), pinnedVersion: z.number().int().nullable().optional(), position: z.number().int(), maxMark: zNum.default(1) }))
+      .array(
+        z.object({
+          id: z.string().max(100).optional(),
+          /** null for a random slot. */
+          questionId: z.string().max(100).nullable().default(null),
+          pinnedVersion: z.number().int().nullable().optional(),
+          randomCategoryId: z.string().max(100).nullable().default(null),
+          randomIncludeSubcategories: z.boolean().default(false),
+          position: z.number().int(),
+          maxMark: zNum.default(1),
+        }),
+      )
       .max(1000)
       .default([]),
   }),
@@ -521,14 +532,24 @@ export async function restoreCourse(tx: DB, input: RestoreInput) {
           .returning();
         let pos = 0;
         for (const slot of [...slots].sort((x, y) => x.position - y.position)) {
-          const questionId = questionMap.get(slot.questionId);
-          if (!questionId) {
-            warn(`Quiz "${a.name}": a question was missing from the backup and was left out`);
+          const questionId = slot.questionId ? questionMap.get(slot.questionId) : undefined;
+          const randomCategoryId = slot.randomCategoryId ? qCatMap.get(slot.randomCategoryId) : undefined;
+          if (!questionId && !randomCategoryId) {
+            warn(`Quiz "${a.name}": a ${slot.randomCategoryId ? "random question's category" : "question"} was missing from the backup and was left out`);
             continue;
           }
           const [row] = await tx
             .insert(quizSlots)
-            .values({ organizationId, quizId: quiz!.id, questionId, pinnedVersion: slot.pinnedVersion ?? null, position: pos++, maxMark: slot.maxMark })
+            .values({
+              organizationId,
+              quizId: quiz!.id,
+              questionId: questionId ?? null,
+              pinnedVersion: questionId ? (slot.pinnedVersion ?? null) : null,
+              randomCategoryId: questionId ? null : randomCategoryId!,
+              randomIncludeSubcategories: !questionId && slot.randomIncludeSubcategories,
+              position: pos++,
+              maxMark: slot.maxMark,
+            })
             .returning({ id: quizSlots.id });
           if (slot.id) slotMap.set(slot.id, row!.id);
           bump(report, "quizSlots");

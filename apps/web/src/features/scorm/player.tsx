@@ -3,7 +3,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ErrorAlert } from "@/components/common";
@@ -16,6 +16,19 @@ import { useT } from "@/lib/i18n";
 import { statusLabel } from "./index";
 import { api12, api2004, ScormSession, type Cmi, type ScormVersion } from "./runtime";
 
+type ScoState = {
+  identifier: string;
+  title: string;
+  status: string;
+  available: boolean;
+  hidden: boolean;
+};
+type Nav = {
+  continue: string | null;
+  previous: string | null;
+  sequenced: boolean;
+};
+
 type Launch = {
   attemptId: string | null;
   attempt: number | null;
@@ -25,10 +38,25 @@ type Launch = {
   cmi: Cmi;
   multiSco: boolean;
   sco: string;
-  scos: { identifier: string; title: string; status: string }[];
+  scos: ScoState[];
+  nav: Nav;
 };
 
-type CommitResult = { status: string; scoStatus: string; scoreRaw: number | null; scoreMax: number | null; totalTimeSeconds: number; rejected: { key: string; reason: string }[] };
+type CommitResult = {
+  status: string;
+  scoStatus: string;
+  scoreRaw: number | null;
+  scoreMax: number | null;
+  totalTimeSeconds: number;
+  rejected: { key: string; reason: string }[];
+  scos?: ScoState[];
+  nav?: Nav;
+  /** After a sequenced SCO ends: the SCO to deliver next, "exit", or null. */
+  next?: string | null;
+};
+
+/** What to launch: a lesson picked from the menu (choice) or the next/previous one (flow). */
+type LaunchRequest = { sco: string } | { request: "continue" | "previous" };
 
 type ApiWindow = Window & { API?: unknown; API_1484_11?: unknown };
 
@@ -53,13 +81,23 @@ async function sendCommit(activityId: string, attemptId: string, sco: string, cm
 export function ScormPlayerPage() {
   const t = useT();
   const qc = useQueryClient();
+  const router = useRouter();
   const { activityId } = useParams<{ activityId: string }>();
   const [launch, setLaunch] = useState<Launch | null>(null);
+  /** Lesson states and navigation after the latest commit (fresher than the launch response). */
+  const [navState, setNavState] = useState<{
+    scos: ScoState[];
+    nav: Nav;
+  } | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [status, setStatus] = useState<string | null>(null);
   /** SCO statuses committed during this visit (fresher than the launch response). */
   const [scoStatus, setScoStatus] = useState<Record<string, string>>({});
   const session = useRef<ScormSession | null>(null);
+  const navStateRef = useRef(navState);
+  useEffect(() => {
+    navStateRef.current = navState;
+  }, [navState]);
   // Keeps the session effect from re-running (and resetting the runtime) when the locale changes.
   const tRef = useRef(t);
   useEffect(() => {
@@ -83,17 +121,42 @@ export function ScormPlayerPage() {
   }, [activityId]);
 
   // Multi-SCO: unmount the current SCO first (it finishes while the API is still installed),
-  // then launch the chosen one in the same attempt.
+  // then launch the requested one in the same attempt. The server checks the package's
+  // sequencing rules against the SCO being left.
   const [switching, setSwitching] = useState(false);
-  const openSco = (sco: string) => {
-    if (!launch || sco === launch.sco || switching) return;
+  const go = (target: LaunchRequest) => {
+    if (!launch || switching || ("sco" in target && target.sco === launch.sco)) return;
+    const from = launch.sco;
     setSwitching(true);
     setLaunch(null);
-    api<Launch>(`/scorm/${activityId}/attempts`, { body: { sco } })
+    setNavState(null);
+    api<Launch>(`/scorm/${activityId}/attempts`, { body: { ...target, from } })
       .then(setLaunch)
       .catch(setError)
       .finally(() => setSwitching(false));
   };
+
+  /**
+   * After the SCO terminates: its own navigation request (adl.nav.request) wins, then what the
+   * package's post-condition rules decided on the server (`next`).
+   */
+  const afterFinish = useRef<(r: CommitResult, sco: string, request: string | undefined) => void>(() => {});
+  useEffect(() => {
+    afterFinish.current = (r, sco, request) => {
+      // Ignore SCOs that terminate while the learner is already moving elsewhere.
+      if (!launch || launch.sco !== sco || switching) return;
+      const nav = r.nav ?? launch.nav;
+      const choice = /^\{target=([^}]+)\}(choice|jump)$/.exec(request ?? "");
+      if (choice) return go({ sco: choice[1]! });
+      if (request && /^(exit|exitAll|suspendAll|abandon|abandonAll)$/.test(request)) return router.push(`/activities/${activityId}`);
+      const next = r.next;
+      if (next === "exit") return router.push(`/activities/${activityId}`);
+      if (!next) return;
+      if (next === nav.continue) go({ request: "continue" });
+      else if (next === nav.previous) go({ request: "previous" });
+      else go({ sco: next });
+    };
+  });
 
   // Install the API on this (the page) window before the SCO loads; remove it on leave.
   useEffect(() => {
@@ -108,10 +171,22 @@ export function ScormPlayerPage() {
             const r = await sendCommit(activityId, attemptId, sco, cmi, finish, keepalive);
             setStatus(r.status);
             setScoStatus((prev) => ({ ...prev, [sco]: r.scoStatus }));
+            if (r.scos && r.nav) setNavState({ scos: r.scos, nav: r.nav });
             if (r.rejected.length) console.warn("SCORM: elements rejected by the server", r.rejected);
+            // keepalive commits happen as the page goes away: no navigation then.
+            if (finish && !keepalive && launch.multiSco) afterFinish.current(r, sco, s.values["adl.nav.request"]);
           }
         : null,
       (err) => toast.error(tRef.current("scorm.commitFailed", "Your progress could not be saved: {error}", { error: errorMessage(err) })),
+      (request) => {
+        const nav = navStateRef.current?.nav ?? launch.nav;
+        const scos = navStateRef.current?.scos ?? launch.scos;
+        if (request === "continue") return nav.continue ? "true" : "false";
+        if (request === "previous") return nav.previous ? "true" : "false";
+        const target = /\{target=([^}]+)\}/.exec(request)?.[1];
+        const item = scos.find((x) => x.identifier === target);
+        return item?.available && !item.hidden ? "true" : "false";
+      },
     );
     session.current = s;
     const w = window as ApiWindow;
@@ -147,11 +222,14 @@ export function ScormPlayerPage() {
   }
   if (!launch) return <Skeleton className="h-[70vh] w-full" />;
 
-  const index = launch.scos.findIndex((x) => x.identifier === launch.sco);
-  const prev = launch.scos[index - 1];
-  const next = launch.scos[index + 1];
-  const scoLabel = (x: Launch["scos"][number], i: number) =>
-    t("scorm.scoOption", "{n}. {title} ({status})", { n: i + 1, title: x.title, status: statusLabel(t, scoStatus[x.identifier] ?? x.status) });
+  const scos = navState?.scos ?? launch.scos;
+  const nav = navState?.nav ?? launch.nav;
+  const scoLabel = (x: ScoState, i: number) =>
+    t("scorm.scoOption", "{n}. {title} ({status})", {
+      n: i + 1,
+      title: x.title,
+      status: statusLabel(t, scoStatus[x.identifier] ?? x.status),
+    });
 
   return (
     <div className="flex h-[calc(100dvh-7rem)] min-h-[480px] flex-col gap-2">
@@ -168,7 +246,7 @@ export function ScormPlayerPage() {
       </div>
       {launch.multiSco && (
         <nav aria-label={t("scorm.lessons", "Lessons in this package")} className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" disabled={!prev || switching} onClick={() => prev && openSco(prev.identifier)}>
+          <Button variant="outline" size="sm" disabled={!nav.previous || switching} onClick={() => go({ request: "previous" })}>
             <ChevronLeft aria-hidden /> {t("scorm.previous", "Previous")}
           </Button>
           <label htmlFor="scorm-sco" className="sr-only">
@@ -179,15 +257,21 @@ export function ScormPlayerPage() {
             className="min-w-0 flex-1 sm:max-w-md"
             value={launch.sco}
             disabled={switching}
-            onChange={(e) => openSco(e.target.value)}
+            onChange={(e) => go({ sco: e.target.value })}
           >
-            {launch.scos.map((x, i) => (
-              <option key={x.identifier} value={x.identifier}>
-                {scoLabel(x, i)}
-              </option>
-            ))}
+            {scos.map((x, i) =>
+              x.hidden && x.identifier !== launch.sco ? null : (
+                <option key={x.identifier} value={x.identifier} disabled={!x.available}>
+                  {x.available
+                    ? scoLabel(x, i)
+                    : t("scorm.scoLocked", "{label} — not available", {
+                        label: scoLabel(x, i),
+                      })}
+                </option>
+              ),
+            )}
           </NativeSelect>
-          <Button variant="outline" size="sm" disabled={!next || switching} onClick={() => next && openSco(next.identifier)}>
+          <Button variant="outline" size="sm" disabled={!nav.continue || switching} onClick={() => go({ request: "continue" })}>
             {t("scorm.next", "Next")} <ChevronRight aria-hidden />
           </Button>
         </nav>
