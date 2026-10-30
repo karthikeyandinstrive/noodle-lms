@@ -3,6 +3,23 @@
 Last updated 2026-10-30 (branch `feature/initial-lms`).
 Priorities: **P0** blocks production, **P1** do soon, **P2** improvements, **P3** future scope.
 
+## By spec phase
+
+The architecture spec's implementation phases (section 10), what is built, and what is still open.
+Every phase is built; what remains is mostly verification against real services and polish.
+
+| Phase | Built | Still open |
+|---|---|---|
+| 1. Auth + RBAC + Users | Sign-in, password reset, Moodle-style roles and overrides, users, cohorts, tenant isolation (RLS); plus SSO (OIDC/SAML), MFA, audit log | SSO against real identity providers; TLS and real secrets (P0) |
+| 2. Courses + Enrolment | Categories, sections, groups, self/manual enrolment, completion, backup/restore, Moodle `.mbz` import | Remaining `.mbz` gaps: image drag-and-drop, cloze, scales, grade formulas (P2) |
+| 3. Assignment + Grading | Assignments (files/text), blind marking, feedback, gradebook (categories, weights, drop lowest), workshop peer review | Manual browser QA (P1) |
+| 4. Quiz | Question bank with versions, 8 question types, random questions, calculated, gap select, GIFT, time limits, review options, results | Image drag-and-drop and cloze types; drag-and-drop gap presentation (P2) |
+| 5. Certificate | Template designer, Unicode PDFs, public verification, badges | Manual browser QA (P1) |
+| 6. Forum | Forums (types, subscriptions), messaging with live updates | — |
+| 7. Payments | Stripe and Razorpay checkout, refunds, webhooks, SaaS subscriptions and plan limits | Test with real Stripe/Razorpay test accounts (P0) |
+| 8. Swagger + polish | API docs (`/api-docs`), English + Spanish, accessibility, PWA, CI, 450 tests + 8 E2E | Open the PR and check CI (Now); Spanish review, QA, tracing, load tests (P1); Docker (P0) |
+| Beyond the spec | SCORM 1.2/2004 with sequencing, LTI 1.3, H5P, video, attendance, calendar, notifications, search, reports | Real SCORM packages, LTI tool and H5P player (P0); SCORM global objectives and time limits (P2) |
+
 ## Now — next steps
 
 - [ ] **Open the pull request** `feature/initial-lms` → `main` at https://github.com/karthikeyandinstrive/noodle-lms/pull/new/feature/initial-lms. Opening it starts CI.
